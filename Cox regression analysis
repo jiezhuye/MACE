@@ -1,0 +1,547 @@
+###Cox regression analysis of clinical factors
+library(openxlsx)
+## read sample info
+setwd("E:/gut/model")
+info = read.xlsx("2021-2-3 MWAS_251216.xlsx")
+covar <- read.xlsx("covar.xlsx")
+info = merge(info,covar,by="Sample_ID")
+row.names(info) <- info[,1]
+colnames(info)=gsub("\\.$","",gsub("^X.","",colnames(info)))
+dim(info)
+head(info)
+info=info[which(is.na(info$antibiotic1)),]### remove antibiotic samples
+info=info[info$cancer==0 | is.na(info$cancer) ,]### also no cancer, 2022/1/12 
+
+info$stage=rep(NA,nrow(info))	
+table(info$Exclude_CAD)
+table((info$SYNTAX<=10|is.na(info$SYNTAX<=10))) 
+
+info$stage[which(info$Exclude_CAD==1 & (info$SYNTAX<=10|is.na(info$SYNTAX<=10)) )]="Normal"
+info$stage[which(info$Exclude_CAD==1 )]="Normal" #2021/11/16
+info$stage[which(info$SCAD==1)]="SCAD"	
+info$stage[which(info$UA==1)]="UA"	
+info$stage[which(info$MI==1)]="MI"	
+info$stage=factor(info$stage,levels=c("Normal","SCAD","UA","MI"))
+info$stage1=factor(info$stage,levels=c("Normal","SCAD","UA","MI"))
+info$stage=as.numeric(info$stage)
+
+### no healthy control are need, for it is future. 79 normal
+info=info[which(info$stage>1 | is.na(info$stage)),]
+## remove age<30
+table(info$age> 25 | is.na(info$age) )
+info =info[which(info$age> 25 | is.na(info$age) ),]
+dim(info)
+rownames(info)=info[,1]
+
+table(info[,c("Center","stage")])
+table(info[,c("Center")])
+table(info[,c("Center","DM")])
+
+match("M19011470a",rownames(info))
+info[270,]
+
+# info as mp2
+
+mp2 = info
+#Comorbidities and stage
+disease_var = c("DM","hyperlip","HF","hyperT","arrhythmia","restenosis","stroke","SCAD","UA","MI","ACS")
+severity = c("SV","SYNTAX","NumberS_less12")
+Cardiac_ultra =c("AAO","RAD","RVD","MPA","IVS","LVPW","S",
+                 "Early_diastolic_velocities","late_diastolic_velocities","Ratio_Ee",
+                 "Ratio_EA","AO","LA","RVOT","lVEDD","LVESD","MVE","AV",
+                 "PV","TVE","MVA","LVEF","LVM","LVMI")
+#SII=PLT*NEUT#/LYMPH#
+#SRI=NEUT#*MONO#/LYMPH#
+#mp2$SII = as.numeric(as.character(mp2$PLT))* as.numeric(as.character(mp2[,"NEUT_num"]))/as.numeric(as.character(mp2[,"LYMPH_num"]))
+#mp2[,"SRI"] =as.numeric(as.character( mp2[,"NEUT_num"])) * as.numeric(as.character(mp2[,"MONO_num"]))/ as.numeric(as.character(mp2[,"LYMPH_num"]))
+inflam = c("CRP_G","FIB","SII","SRI")
+#?Ĺ??ܺ??ļ????˵?ѪҺѧ??־??
+heatfun =c("LDH","CKMB","ProBNP","TNT_HS")
+## Medications and demographic
+cder_var1= c("Center","Sex","drinking","smoking","BB","CCB","PPI","ACEI","Aspirin","Clop","ARB","AGIs","Biguanide",
+             "Tica","Statin")  # 52 high,23 lw for WBC, 
+cder_var2= c("age","SBP","DBP","HDLC","LDLC","TRIG","BMI","ALT","AST","eGFR","GLUC","CHOL")  # 52 high,23 lw for WBC, 	
+
+ana_var = unique( c( c("antibiotic1","cancer","Exclude_CAD","SYNTAX","SCAD","age",
+                       "MACE","Death","Isch","Death","Death","MACE_4","Death","Isch",
+                       "MACE_6","Death","Isch","Death_time","Death_time",
+                       "MACE4_time","Death_time","Isch_time","MACE_time","Death_time","Isch_time",
+                       "MACE6_time","Death_time","Isch_time","weight"), disease_var,severity,Cardiac_ultra,
+                     inflam,heatfun,cder_var1,cder_var2))
+#write.csv(mp2[,ana_var],"D:\\Work\\ACVD2022\\01.data\\clean\\2021_2_3_MWAS_no_chinese.240406.csv")
+
+
+match(disease_var, colnames(mp2))
+match(severity, colnames(mp2))
+match(Cardiac_ultra, colnames(mp2))
+match(inflam, colnames(mp2))
+match(heatfun, colnames(mp2))
+match(cder_var2, colnames(mp2))
+match(cder_var1, colnames(mp2))
+cder_var= c("Center","age","Sex","drinking","smoking","BB","CCB","PPI","ACEI","Aspirin","Clop","ARB","AGIs","Biguanide",
+            "SBP","DBP","hyperT","HDLC","LDLC","TRIG","BMI","Tica","Statin")  # 52 high,23 lw for WBC, 
+
+
+# non analysis varible
+dropvar =c("CAG1" ,"Revascularization" ,"Smoke_rxdate"                               
+           ,"Sample_ID"   ,"ID" ,"dialysis_renalfailure_Peripheral.neuropathy"
+           ,"impID" ,"name" ,"rxDate"  ,"CAG" ,"bleeding"                                   
+           ,"Death","Death_time" ,"MACE" ,"MACE_time"                                  
+           ,"MACE_2" ,"MACE2_time","MACE_3" ,"MACE3_time" ,"SIM"                                        
+           ,"SIM_time" ,"Bleeding" ,"Bleeding_time" ,"Type_drink" , "Type_smoke")  
+table(info[,c("bleeding","Bleeding")])
+
+mp2 = mp2[,apply(mp2,2,function(x){ sum(!is.na(x)) }) > 100] ## at least 100 non missing  ,24%
+colnames(mp2)
+
+# drop non analysis varible
+mp2 = mp2[,!colnames(mp2)%in%dropvar]
+
+# remove items with near zero variance
+library(caret)
+
+# log for non category variable and non negative
+
+#for( i in 1:ncol(mp2)){
+#	mp2[,i]= as.numeric(as.character(mp2[,i]))
+#}
+
+
+colnames(mp2)[ apply(mp2,2,function(x){sum(as.numeric(x)<0,na.rm=T)})>0]
+
+
+
+
+match(disease_var, colnames(mp2))
+match(disease_var, colnames(info))
+match(severity, colnames(mp2))
+match(Cardiac_ultra, colnames(mp2))
+mace =1 
+if(mace == 0){
+  
+  ## Death
+  exp_dat = data.frame(
+    MACE = apply(info[,c("Death","Death")], 1, function(x){
+      x = as.numeric(x)
+      if(all(is.na(x))) NA else as.numeric(sum(x, na.rm = TRUE) > 0)
+    }),
+    MACE_time_wdl = apply(info[,c("Death_time","Death_time")], 1, function(x){
+      x = as.numeric(x)
+      if(all(is.na(x))) NA else min(x, na.rm = TRUE)
+    })
+  )
+  
+} else if(mace == 1){
+  
+  ## MACE4
+  exp_dat = data.frame(
+    MACE = as.numeric(info$MACE4),
+    MACE_time_wdl = as.numeric(info$MACE4_time))
+  exp_dat[info[,1] == "M19011317a", "MACE"] = 1
+  
+} else if(mace == 2){
+  
+  ## MACE5
+  exp_dat = data.frame(
+    MACE = as.numeric(info$MACE5),
+    MACE_time_wdl = as.numeric(info$MACE5_time))
+  exp_dat[info[,1] == "M19011317a", "MACE"] = 1
+}else if(mace == 3){
+  
+  ## MACE6
+  exp_dat = data.frame(
+    MACE = as.numeric(info$MACE6),
+    MACE_time_wdl = as.numeric(info$MACE6_time))
+  exp_dat[info[,1] == "M19011317a", "MACE"] = 1
+  
+}else if(mace == 4){
+  
+  ## MACE7
+  exp_dat = data.frame(
+    MACE = as.numeric(info$MACE7),
+    MACE_time_wdl = as.numeric(info$MACE7_time))
+  exp_dat[info[,1] == "M19011317a", "MACE"] = 1
+  
+} else {
+  
+  stop("Unknown mace value")
+}
+
+## 特殊样本强制事件
+exp_dat[info[,1] == "M19011317a", "MACE"] = 1
+
+print(table(exp_dat$MACE))
+
+sum(is.na(exp_dat$MACE))
+table(exp_dat$MACE) # 39 deadth; MACE=1,117; MACE=2,122; MACE=3, 132;
+
+out=c()
+var1 = c(disease_var,cder_var1)
+aa =c()
+for(i in 1:length(var1)){	
+  ### by MACE
+  tem =aggregate( mp2[which( (!is.na(mp2[,var1[i]]))),var1[i]], by=list(gr=exp_dat$MACE[which( (!is.na(mp2[,var1[i]])))]),mean,na.rm=T)
+  tem1 =aggregate( mp2[which( (!is.na(mp2[,var1[i]]))),var1[i]], by=list(gr=exp_dat$MACE[which( (!is.na(mp2[,var1[i]])))]),sum,na.rm=T)
+  ## all
+  j1 = paste0(  sum( mp2[which( ( !is.na(mp2[,var1[i]]) & !is.na(exp_dat$MACE) )),var1[i]],na.rm=T) ,"( ", 
+                round(mean( mp2[which( (!is.na(mp2[,var1[i]])  & !is.na(exp_dat$MACE)  )),var1[i]],na.rm=T)*100,3), "% )")
+  
+  print(var1[i])
+  print(table(mp2[which( (!is.na(mp2[,var1[i]]))),var1[i]] ))
+  #print(tem)
+  
+  library("survival")
+  tmp=data.frame(target= mp2[which( (!is.na(mp2[,var1[i]]))),var1[i]],exp_dat[which( (!is.na(mp2[,var1[i]]))),])
+  colnames(tmp)[1]="target"
+  mod=coxph(Surv(MACE_time_wdl, MACE) ~ . , data=tmp)##
+  
+  
+  j2 = c( paste0( tem1$x ,"( ", round(tem$x*100,3), "% )"),all=j1)
+  names(j2) =c(paste0( names(table(exp_dat$MACE)) ,"( ", table(exp_dat$MACE) , " )" ) ,"all")
+  aa = rbind(aa,c(j2,round(coef(summary(mod))["target",],6)))
+}
+rownames(aa)=var1
+table(info[,c("CHD","stage1")])
+
+out= rbind(out,aa)
+
+aa =c()
+var1 = c(cder_var2,severity,Cardiac_ultra,inflam,heatfun)
+mp2[, var1] <- lapply(mp2[, var1], function(x) as.numeric(as.character(x)))
+for(i in 1:length(var1)){	
+  print(var1[i])
+  print(table(mp2[which( (!is.na(mp2[,var1[i]]))),var1[i]] ))
+  mp2[,var1[i]]= as.numeric(as.character(mp2[,var1[i]]))
+  
+  ### by MACE
+  tem =aggregate( mp2[which( (!is.na(mp2[,var1[i]]))),var1[i]], by=list(gr=exp_dat$MACE[which( (!is.na(mp2[,var1[i]])))]),mean,na.rm=T)
+  tem1 =aggregate( mp2[which( (!is.na(mp2[,var1[i]]))),var1[i]], by=list(gr=exp_dat$MACE[which( (!is.na(mp2[,var1[i]])))]),sd,na.rm=T)
+  ## all
+  j1 = paste0( round( mean( mp2[which( ( !is.na(mp2[,var1[i]]) & !is.na(exp_dat$MACE) )),var1[i]],na.rm=T),3) ," ?? ", 
+               round(sd( mp2[which( (!is.na(mp2[,var1[i]])  & !is.na(exp_dat$MACE)  )),var1[i]],na.rm=T),3) )
+  
+  library("survival")
+  tmp=data.frame(target= mp2[which( (!is.na(mp2[,var1[i]]))),var1[i]],exp_dat[which( (!is.na(mp2[,var1[i]]))),])
+  colnames(tmp)[1]="target"
+  if( all(tmp$target>0, na.rm=T) ){
+    tmp$target =scale( log10(tmp$target + 1e-3))
+  }else{
+    tmp$target =scale( log10(tmp$target + abs(min(tmp$target,na.rm=T))+1e-3 ) )
+    
+  }
+  mod=coxph(Surv(MACE_time_wdl, MACE) ~ . , data=tmp)##
+  
+  #print(tem)
+  j2 = c( paste0( round(tem$x,3) ," ?? ", round(tem1$x,3)),all=j1)
+  names(j2) =c(paste0( names(table(exp_dat$MACE)) ,"( ", table(exp_dat$MACE) , " )" ) ,"all")
+  aa = rbind(aa,c(j2,round(coef(summary(mod))["target",],6)))
+}
+rownames(aa)=var1
+out= rbind(out,aa)
+out = data.frame(out)
+out$qvalue = p.adjust(out[,ncol(out)],method="BH")
+
+write.csv(out,"stable1_tradition_factor.coxph.univarite.csv")
+
+###cox regression analysis of microbiome, metabolites, and lipids
+library(ggforestplot)
+library(ggplot2)
+library(ggplot2)
+library(papaja)
+library(ggplot2)
+library(RColorBrewer)	
+library(ggrepel)
+library(compositions)
+library(openxlsx)
+
+run_coxph_more=function(mp2,info,mace=0,logx=T){  ### mace=0,deadth; mace=1,mace; mace=2; mace=3
+  ### antibiotic already removed.
+  
+  ### intersect meta and metagenomic
+  nm=intersect(colnames(mp2),rownames(info))
+  print(length(nm))
+  
+  info=info[pmatch(nm,rownames(info)),]
+  mpx=mp2[,pmatch(rownames(info),colnames(mp2))]
+  if(logx ==T){### microbime only
+    mpx=mpx[apply(mpx,1,function(x){mean(x>0)>=0.05}),]
+    library(compositions)
+    ### column is variable, row is sample,clr transform
+    if( grepl("k__",rownames(mpx)[1]) ){ # mp2
+      mpx = t(data.frame( clr(data.frame(t(mpx)/100+1e-10))))
+    }else{
+      mpx = t(data.frame( clr(data.frame(t(mpx)+1e-12))))
+    }
+  }
+  dim(mpx)
+  #	i=which(grepl("hallii",rownames(mpx)))
+  #i=608
+  #plot(log10(t(mpx1[i,])+1e-12), t(mpx[i,])) # CLR is very in consistent for bracken
+  
+  
+  ### coxph for  metagenomics		
+  library("survival")
+  
+  ## BB beta???????ͼ?
+  ## ??ͨ?????ͼ?(CCB)
+  ## ???ӱ????Ƽ?(PPIs)
+  ## Ѫ?ܽ?????ת??ø???Ƽ?(ACEI)
+  ## confounders
+  cder_var=c("Center","age","Sex","drinking","smoking","BB","CCB","PPI","ACEI","Aspirin","Clop","ARB","Tica","AGIs","Biguanide")
+  #DOI: 10.1056/NEJMoa1109400
+  #traditional  cardiovascular risk factors
+  # performed Cox proportional-hazards regression analysis with adjustment for traditional 
+  # cardiovascular risk factors (age, sex, systolic blood 
+  # pressure, presence or absence of diabetes mellitus, 
+  # low-density and high-density lipoprotein cholesterol levels, triglyceride levels, and smoking status) 
+  # and for log-transformed high-sensitivity C-reactive protein levels (both alone and with myeloperoxidase), 
+  #  the log-transformed estimated glomerular filtration rate, total leukocyte count, 
+  # body-mass index, medication history, and angiographic extent of coronary artery disease
+  #clinc = data.frame( gender,lnage,lntrsbp,lntrdbp=log(info$DBP),diabet,lnhdlc,
+  #	lnldlc=log(info$LDLC*38.67),lnchol,lntrig = log(info$TRIG*38.67),smoke, lntcrp = log(info$CRP_G),
+  #	lnwbc = log(info$WBC),bmi=info$BMI,SYNTAX=log(info$SYNTAX+0.01),
+  #	info[,c("BB","CCB","PPI","ACEI","Aspirin","Clop")])
+  cder_var= c("Center","age","Sex","drinking","smoking","BB","CCB","PPI","ACEI","Aspirin","Clop","ARB","AGIs","Biguanide",
+              "SBP","DBP","hyperT","HDLC","LDLC","TRIG","BMI")  # 52 high,23 lw for WBC, 
+  # race was categorized as white, black, Asian/Pacific Islander, American Indian/Alaska Native, multiracial, not specified, or not documented (ie, missing).
+  # LDLC and CHOL, is 0.8 correlation, just kept one, we kept LDLC.
+  # Tica is -0.77 with Clop, drop Tica
+  sort(apply(info[,cder_var],2,function(x){ mean(is.na(x)) })) ## stat the missing 
+  cder= info[,cder_var]
+  
+  #cder = cder[,apply(cder,2,function(x){mean(is.na(x))})<0.3] ### missing >30%, impute is no mean
+  colnames(cder)
+  ### fill NA with median for misssing < 20%
+  for ( var in colnames(cder)[apply(cder,2,function(x){mean(is.na(x))})<0.2]){
+    cder[is.na(cder[,var]),var]=median(cder[,var],na.rm=T)
+  }
+  head(cder)
+  sort(apply(cder,2,function(x){ mean(is.na(x)) })) ## stat the missing 
+  # for missing >20%, categorized as low ,high, or not documented (ie, missing)
+  transx =function(x,low_band=4, high_band=10){
+    y=rep("miss",length(x))
+    y[which(x<=low_band)]="first"
+    y[which(x>=high_band)]="later"
+    y[which(x<high_band & x>low_band )]="cormal"
+    factor(y)
+  }
+  #cx1 = cor(cder,use="pairwise.complete.obs")
+  #  cder$WBC = transx(cder$WBC,4,10)
+  cder$BMI = transx(cder$BMI,11,27)
+  cder$smoking = transx(cder$smoking,-0.1,0.9)
+  cder$drinking = transx(cder$drinking,-0.1,0.9)
+  cder$SBP = transx(cder$SBP,120,140)
+  cder$DBP = transx(cder$DBP,-0.1,80)
+  
+  for(var in c("age","HDLC","LDLC","TRIG")){ # log 
+    cder[,var]= log(cder[,var])
+  }
+  #cx1 = cor(cder[,colnames(cder)%in%c("Center","age","Sex","BB","CCB","PPI","ACEI","Aspirin","Clop","ARB","Tica","AGIs","Biguanide",
+  #		"hyperT","HDLC","LDLC","CHOL","TRIG")])
+  # pheatmap(cx1)
+  # library(caret)
+  #findCorrelation(cx1,0.7)
+  #plot(cder$LDLC, cder$CHOL)
+  
+  if(mace == 0){
+    
+    ## Death
+    exp_dat = data.frame(
+      MACE = apply(info[,c("Death","Death")], 1, function(x){
+        x = as.numeric(x)
+        if(all(is.na(x))) NA else as.numeric(sum(x, na.rm = TRUE) > 0)
+      }),
+      MACE_time_wdl = apply(info[,c("Death_time","Death_time")], 1, function(x){
+        x = as.numeric(x)
+        if(all(is.na(x))) NA else min(x, na.rm = TRUE)
+      }),
+      cder
+    )
+    
+  } else if(mace == 1){
+    
+    ## MACE4
+    exp_dat = data.frame(
+      MACE = as.numeric(info$MACE4),
+      MACE_time_wdl = as.numeric(info$MACE4_time),
+      cder
+    )
+    
+  } else if(mace == 2){
+    
+    ## MACE5
+    exp_dat = data.frame(
+      MACE = as.numeric(info$MACE5),
+      MACE_time_wdl = as.numeric(info$MACE5_time),
+      cder
+    )
+    
+  }else if(mace == 3){
+    
+    ## MACE5
+    exp_dat = data.frame(
+      MACE = as.numeric(info$MACE6),
+      MACE_time_wdl = as.numeric(info$MACE6_time),
+      cder
+    )
+    
+  }else if(mace == 4){
+    
+    ## MACE5
+    exp_dat = data.frame(
+      MACE = as.numeric(info$MACE7),
+      MACE_time_wdl = as.numeric(info$MACE7_time),
+      cder
+    )
+    
+  } else {
+    
+    stop("Unknown mace value")
+  }
+  
+  ## 特殊样本强制事件
+  exp_dat[info[,1] == "M19011317a", "MACE"] = 1
+  
+  print(table(exp_dat$MACE))
+  
+  print("mean visit time:")
+  print(mean(exp_dat$MACE_time_wdl,na.rm=T))
+  
+  res1=t(apply(mpx,1,function(y){
+    tmp=data.frame(target=y,exp_dat)
+    colnames(tmp)[1]="target"
+    mod=coxph(Surv(MACE_time_wdl, MACE) ~ . , data=tmp)## log10 abundance
+    coef(summary(mod))["target",]
+  }))
+  
+  res1=data.frame(res1)
+  res1$qvalue=p.adjust(res1[,"Pr...z.."],method="BH")
+  res1$tax=unlist(lapply(strsplit(rownames(res1),"|",fixed=T),function(x){x[length(x)]}))
+  rownames(res1)=res1$tax
+  print("pvalue<0.05: ")
+  print(sum(res1[,"Pr...z.."]<0.05))
+  print("qvalue<0.1: ")
+  print(sum(res1[,"qvalue"]<0.1))
+  res1
+}
+
+###--------------------------------------------------------------------------------
+# phenotype and MACE
+#--------------------------------------------------------------------------------
+# info as mp2
+cder_var= c("Center","age","Sex","drinking","smoking","BB","CCB","PPI","ACEI","Aspirin","Clop","ARB","AGIs","Biguanide",
+            "SBP","DBP","hyperT","HDLC","LDLC","TRIG","BMI","Tica","Statin")  # 52 high,23 lw for WBC, 
+#info = read.xlsx("2021-2-3 MWAS_251216.xlsx")
+#covar <- read.xlsx("covar.xlsx")
+#info = merge(info,covar,by="Sample_ID")
+a = info[,colnames(info)%in%cder_var]
+mp2 = info[,!colnames(info)%in%cder_var]
+#mp2 = mp2[,apply(mp2,2,function(x){ mean(is.na(x)) })<0.3] ## stat the missing 
+# non analysis varible
+dropvar = c("CAG1","Revascularization","Smoke_rxdate",colnames(mp2)[apply(mp2,2,function(x){ mean(is.na(x)) })<0.3][c(1:11,16:29)])
+mp2 = mp2[,apply(mp2,2,function(x){ sum(!is.na(x)) }) > 300] ## at least 300 non missing  ,24%
+colnames(mp2)
+# drop non analysis varible
+colnames(mp2)[c(1:11,23:43)]
+mp2 = mp2[,-c(1:11,23:43)]
+mp2 = mp2[,!colnames(mp2)%in%dropvar]
+# remove items with near zero variance
+library(caret)
+id = nearZeroVar(mp2)
+colnames(mp2)[id]
+mp2 = mp2[,-id]
+colnames(mp2)
+
+# log for non category variable and non negative
+
+for( i in 1:ncol(mp2)){
+  mp2[,i]= as.numeric(as.character(mp2[,i]))
+}
+#id = nearZeroVar(mp2)
+#colnames(mp2)[id]
+#mp2 = mp2[,-id]
+
+colnames(mp2)[ apply(mp2,2,function(x){sum(as.numeric(x)<0,na.rm=T)})>0]
+for( i in 1:ncol(mp2)){
+  if( length(levels(factor(mp2[,i])))>12 ){
+    mp2[,i]= log(mp2[,i]+ 1e-3 )
+  }
+}	
+### fill NA with median
+#for ( var in colnames(mp2)){
+#		mp2[is.na(mp2[,var]),var]=median(mp2[,var],na.rm=T)
+#}
+
+head(mp2)
+
+
+
+out=run_coxph_more(t(mp2),info,mace=0,logx=F) #mace, log =False for metabolite, 939:132
+out$tax1 =paste(out$tax,ifelse(out$qvalue<0.05," *",""),sep="")
+write.csv(out,"tradition_factor.coxph.death.more.update.csv",quote=F)
+
+#--------------------------------------------------------------------------------
+# ko and MACE
+#--------------------------------------------------------------------------------
+library(KEGGREST)
+rxn2enz <- keggLink("ko", "pathway")
+rxn <- keggList("pathway")
+kk <- keggList("ko")
+m_enz=data.frame(rxn=gsub("path:","",names(rxn2enz)),comp=gsub("ko:","",rxn2enz))
+m_enz$module =  paste(m_enz$rxn,rxn[pmatch(m_enz$rxn,gsub("path:","",names(rxn)),duplicates.ok=T)],sep=":") 
+m_enz =m_enz[grepl("map",m_enz[,1]),]
+k_enz=data.frame(rxn=gsub("ko:","",names(kk)),comp=kk)
+rxn2enz <- keggLink("ko", "module")
+rxn <- keggList("module")
+m_enz1=data.frame(rxn=gsub("md:","",names(rxn2enz)),comp=gsub("ko:","",rxn2enz))
+m_enz1$module =  paste(m_enz1$rxn,rxn[pmatch(m_enz1$rxn,gsub("md:","",names(rxn)),duplicates.ok=T)],sep=":") 
+dim(k_enz)
+k_enz =data.frame(k_enz, module = m_enz1[pmatch(k_enz$rxn,m_enz1$comp,duplicates.ok=T),"module"],
+                  pathway = m_enz[pmatch(k_enz$rxn,m_enz$comp,duplicates.ok=T),"module"])
+head(k_enz)
+sig_symbol = function(qvalue){
+  nn =rep("",length(qvalue))
+  nn[qvalue<0.25]=" +"
+  nn[qvalue<0.1 & qvalue>=0.05]=" *"
+  nn[qvalue<0.05 & qvalue>=0.01 ]=" **"
+  nn[qvalue<0.01]=" ***"
+  nn
+}
+mp2= read.csv("Acvd2020.ko.prof.rename.csv",row.names=1,head=T)
+mp2=mp2[apply(mp2,1,function(x){mean(x>0)>=0.05}),]
+mp2 = log10(mp2+1e-10)
+out=run_coxph_more(mp2,info,mace=0,logx=F)#0：death:1:MACE
+out=data.frame(out, k_enz[pmatch(out$tax,k_enz$rxn,duplicates.ok=T),-1])
+out$tax1 =paste(out$tax,sig_symbol(out$qvalue),sep="")
+out$sname = unlist(lapply(strsplit(out$comp,";",fixed=T),function(x){ x[1] }))
+out$ftax = paste(out$comp	,out$pathway,sep=";")
+out$ftax1 = paste(out$ftax,sig_symbol(out$qvalue),sep="")
+write.csv(out,"ko.coxph.death.more.update.csv",quote=F)
+
+#--------------------------------------------------------------------------------
+# mgs and MACE
+#--------------------------------------------------------------------------------
+mp2= read.csv("Acvd2020.mgs.prof.rename.csv",row.names=1,head=T)
+out=run_coxph_more(mp2,info,mace=0,logx=T)#0：death:1:MACE
+tax = read.table("MACE4_coxph/MGS.cluster.IMG_v400_ncbi_2016_6_28.taxo1.any1.fromsussane.2018.10.19.addIGGgut.addSGBref.detail",sep="\t",quote="",as.is=T,head=T)
+res1=data.frame(out,tax[pmatch(gsub("X","",out$tax),tax[,1],duplicates.ok=T),c("V2","final_anno")])
+res1$ftax1 = paste(res1$final_anno,ifelse(res1$qvalue<0.1," *",""),sep="")
+write.csv(res1,"mgs.coxph.mace4.more.update.csv",quote=F)
+
+#--------------------------------------------------------------------------------
+# Fecel-Metabolomics and MACE
+#--------------------------------------------------------------------------------
+mp2= t(read.csv("Acvd2020.Fecel-Metabolomics.prof.rename.T.csv",row.names=1,head=T))
+out=run_coxph_more(mp2,info,mace=0,logx=F)#0：death:1:MACE
+write.csv(out,"Fecel-Metabolomics.coxph.death.more.update.csv")
+
+#--------------------------------------------------------------------------------
+# Fecel-Lipidomics and MACE: q<0.1:12, P<0.05, 74
+#--------------------------------------------------------------------------------
+
+## Fecel-Lipidomics
+mp2= t(read.csv("Acvd2020.Fecel-Lipidomics.prof.rename.T.csv",row.names=1,head=T))
+out=run_coxph_more(mp2,info,mace=0,logx=F)#0：death:1:MACE
+write.csv(out,"Fecel-Lipidomics.coxph.death.more.update.csv")
+
+
