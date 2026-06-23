@@ -1,0 +1,290 @@
+library(openxlsx)
+
+args=c("E:/gut/model/Acvd2020.mgs.prof.rename.csv")
+occ=0.1
+prof2 = read.csv(		 as.character(args[1]),quote="",as.is=T,row.names=1,head=T)
+colnames(prof2)= gsub("\"","",colnames(prof2))
+colnames(prof2)= gsub("^X.","",gsub("\\.$","",colnames(prof2)))
+prof2 = as.data.frame(t(prof2))
+if( all(grepl("mgs",colnames(prof2)))  ){
+  colnames(prof2) = paste("MGS.igc",unlist( lapply( strsplit(colnames(prof2),"mgs",fixed=T),function(x){x[length(x)]}) ) ,sep="")
+}	
+colnames(prof2) <- gsub('"', '', colnames(prof2))	 				 
+mgstax = read.table("E:/gut/model/MACE4_coxph/MGS.cluster.IMG_v400_ncbi_2016_6_28.taxo1.any1.fromsussane.2018.10.19.addIGGgut.addSGBref.detail",sep="\t",quote="",as.is=T,head=T)
+# head(mgstax)
+cnt = apply(prof2,2,function(x){ mean(x>1e-9)})
+#table(cnt>0.1)
+cnt[pmatch( c("MGS.igc1237","MGS.igc0736", "MGS.igc0099"),names(cnt))]
+
+library(pulsar)
+library(SpiecEasi)
+### inpout , row is sample ,column is micobe
+prof = prof2[,cnt>occ]
+#dim(prof)
+idds = data.frame(id=1:ncol(prof),tip=mgstax[pmatch(colnames(prof),mgstax[,1]),"final_anno"])
+
+#idds[grepl("mgs1237",idds[,2]),]
+#idds[grepl("mgs0099",idds[,2]),]
+#su= unique( c("1237","1484","0215","1507","1419","0099","0032",
+#		"1021","1180","0364","1155","1482","0337"))
+#su = c("1237","1484","0580","0202","0690","0099","1507","0032","0049","0215","0054","0736","0156","0508","0481","0329","1023","0209")
+su = c(
+  "0099","0580","0156","0202","0089","1484","0032","0345","0788","1237",
+  "0183","1507","0201","0690","0278","1385","0185","0049","1023","0260",
+  "0508","0736","0189","0346","0481","1271","0215","0209","0313","1146",
+  "0294","0318","0353","0072","1495","0756","0416","1425","0654","0069",
+  "0329","0589","0922","0022","0648","0154","0282","0987","0342","1492",
+  "1371","0255","0779","1194","0054","0473","0770","0266","1493","0092",
+  "1284","0954","0660","1392"
+)
+pmatch(su,unlist( lapply( strsplit(idds[,2],"-mgs",fixed=T),function(x){x[length(x)]}) )  )
+
+#su = su[su%in% unlist( lapply( strsplit(idds[,2],"-mgs",fixed=T),function(x){x[length(x)]}) ) ]
+su =idds[pmatch(su, unlist( lapply( strsplit(idds[,2],"-mgs",fixed=T),function(x){x[length(x)]}) ) ),]
+# read mace biomarker
+sig_symbol = function(qvalue){
+  nn =rep("",length(qvalue))
+  nn[qvalue<0.25]=" +"
+  nn[qvalue<0.1 & qvalue>=0.05]=" *"
+  nn[qvalue<0.05 & qvalue>=0.01 ]=" **"
+  nn[qvalue<0.01]=" ***"
+  nn
+}
+mace_b = read.csv("E:/gut/model/MACE4_coxph/mgs.coxph.mace4.more.update_tax.csv",head=T,as.is=T,row.names=1)
+mace_b$ftax1 = paste(gsub(" *","",mace_b$ftax1,fixed=T),sig_symbol(mace_b$qvalue),sep="")	
+
+su$tax= mace_b[pmatch( paste("MGS.igc", unlist( lapply( strsplit(su$tip,"-mgs",fixed=T),function(x){x[length(x)]}) ),sep="") ,mace_b$tax),"ftax1"]
+su$coef= mace_b[pmatch( paste("MGS.igc", unlist( lapply( strsplit(su$tip,"-mgs",fixed=T),function(x){x[length(x)]}) ),sep="") ,mace_b$tax),"coef"]
+su <- su[!is.na(su$id), ]
+
+# mace source
+score = log10( apply(prof[ , su[su$coef>0,"id"]] ,1,mean) +1e-12) - 
+  log10( apply(prof[ , su[su$coef<0,"id"]] ,1,mean)+1e-12) 
+hist(score, breaks=20)
+names(score) = gsub("\"","",names(score) ) 
+
+# fecal metabolites
+mp2= t(read.csv("E:/gut/model/Acvd2020.Fecel-Metabolomics.prof.rename.T.csv",row.names=1,head=T))
+mp2[1:4,1:4]
+
+# intersect, 920 
+nm = intersect(colnames(mp2),names(score))
+length(nm)
+target = score[pmatch(nm,names(score))]
+X = t(mp2[,pmatch(nm,colnames(mp2))])
+
+# model 
+library(caret)
+set.seed(0)
+a <- createDataPartition(target, p = 0.75, list=FALSE)
+X_train <- X[a,]
+X_test <- X[-a,]
+t_train = target[a]
+t_test = target[-a]
+library(randomForest)
+
+
+set.seed(0)
+result <- replicate(10, rfcv(X_train, t_train,cv.fold=10), simplify=FALSE)
+saveRDS(result,"score_replicate.Metabolomics_rfcv.RDS")
+error.cv <- sapply(result, "[[", "error.cv")
+error.cv <- sapply(result, "[[", "error.cv")				
+# 18 
+set.seed(0)
+rf = randomForest(X_train, t_train,ntree=1000,importance=T)
+tmp = rf$importance
+tmp = tmp[order(tmp[,1],decreasing=T),]
+
+
+set.seed(0)
+rf1 =  randomForest(X_train[,rownames(tmp)[1:18]], t_train,ntree=1000,importance=T)
+
+# predict
+pred = predict(rf1,X_test)
+plot(pred,t_test)
+df = data.frame(x=pred,y=t_test)
+library(ggplot2)
+cor(df$x,df$y,method="spearman")
+p1= ggplot(data =df , aes(y = y, x = x)) +    
+  geom_point(pch = 21,size=1,alpha=0.5)+
+  geom_smooth(method="lm" ,color ="#2272a9",se=T )+
+  xlab("Validation set rediction")+
+  ylab("Measure(log)")+
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1),
+        legend.title = element_blank(),
+        legend.position = "none" ,
+        strip.text.x = element_text(size = 5) )
+
+R_spearman <- cor(df$x, df$y, method = "spearman")
+
+# 绘图
+p1 <- ggplot(data = df, aes(x = x, y = y)) +
+  geom_point(pch = 21, size = 1, alpha = 0.5) +
+  geom_smooth(method = "lm", color = "#2272a9", se = TRUE) +
+  xlab("Validation set prediction") +
+  ylab("Measure(log)") +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1),
+    legend.title = element_blank(),
+    legend.position = "none",
+    strip.text.x = element_text(size = 5)
+  ) +
+  # 添加 Spearman R 到左上角
+  annotate("text", x = min(df$x), y = max(df$y),
+           label = paste0("R = ", round(R_spearman, 2)),
+           hjust = 0, vjust = 1, size = 6, color = "black")
+
+
+# 显示图
+p1
+
+
+ggsave("mace_microbe.Metabolomics_score.scatter1.pdf", p1, 
+       width = 8, height = 8) 	
+
+# fecal metabolite mace
+out = read.csv("E:/gut/model/MACE4_coxph/Fecel-Metabolomics.coxph.mace4.more.update_tax.csv",
+               head=T, row.names=1, as.is=T)
+out$ftax1 = paste(gsub(" *","",out$ftax1,fixed=T),sig_symbol(out$qvalue),sep="")	
+
+# anotation imp
+imp = data.frame(tmp[1:18,])
+imp$newsgb=out[pmatch(rownames(imp),out$tax,duplicates.ok=T),c("ftax1")]
+
+#imp$en =sign(out[pmatch(rownames(imp),out$tax,duplicates.ok=T),c("coef")])
+imp$en = t(sign(cor(target,X[,rownames(imp)],method="spearman")))
+
+
+library(papaja)
+library(ggplot2)
+library(RColorBrewer)	
+library(ggrepel)
+
+
+imp$en =factor( imp$en, labels=c("Neg","Pos"))
+p1 = ggplot(imp, aes(x=reorder(newsgb,X.IncMSE), y=X.IncMSE, fill=factor(en))) +
+  geom_bar(stat='identity',position="dodge") +	
+  scale_fill_manual(values = c("#2272a9","#74C476") )+  
+  theme(text = element_text(size=9))+
+  coord_flip()+
+  ylab("RF importance (MeanDecreaseGini)")+
+  xlab("Mace microbiome score model (Validation set , R=0.46) ")+
+  papaja::theme_apa(base_size = 12)+
+  theme(
+    axis.text.x = element_text(angle = 90, size = 8, vjust = 0))
+
+ggsave("mace4_microbe.Metabolomics_score.imp.pdf", p1, 
+       width = 8, height = 6) 
+
+write.csv(imp,"score_replicate_rfcv.Metabolomics.importance.csv")
+
+#------------------------------------------------
+#  mace microbe and metabolite heatmap
+#-------------------------------------------------
+mgs_bracken = read.csv("E:/gut/model/MACE4_coxph/mgs.coxph.mace4.more.update_tax.csv",row.names=1,head=T,as.is=T)
+mark_mebo = read.csv("E:/gut/model/MACE4_coxph/Fecel-Metabolomics.coxph.mace4.more.update_tax.csv",head=T,row.names=1,as.is=T)
+mgs_bracken$ftax1 = paste(gsub(" *","",mgs_bracken$ftax1,fixed=T),sig_symbol(mgs_bracken$qvalue),sep="")	
+mark_mebo$ftax1 = paste(gsub(" *","",mark_mebo$ftax1,fixed=T),sig_symbol(mark_mebo$qvalue),sep="")
+
+mark_mebo = mark_mebo[mark_mebo$tax%in%rownames(imp),]
+mgs_bracken =mgs_bracken[pmatch(su$tip,mgs_bracken$final_anno) ,]
+pdf("mace_microbe_score.microbe_Lipidomics1.pdf", width=10, height=8)
+heatmap_two_mark(mgs_bracken,mark_mebo, v1="ftax1",v2="ftax1",sp=15)
+dev.off()
+
+process_sig=function(sp="15",pref2){
+  
+  ## all
+  #set_33...glm
+  f1=paste(pref2,"set_",sp,"...glm.csv",sep="")
+  glm_a=read.csv(f1,as.is=T,head=T,row.names=1)
+  
+  #	aa = glm_a[glm_a[,2]=="Center", ]
+  #hist(aa$Pr,breaks=20)
+  glm_a
+}
+pref2="E:\\gut\\model\\glm_more_update\\"
+mark_bracken = mgs_bracken
+heatmap_two_mark = function(mark_bracken,mark_mebo, v1="ftax1",v2="ftax1",sp){
+  aso = process_sig(sp,pref2)
+  print(head(aso))
+  #### prepare data for plot
+  pathway =  mark_mebo$tax
+  sgb = mark_bracken$tax
+  
+  
+  if( grepl("p__",aso$sgb[1]) ){
+    aso2 = aso[unlist(lapply(strsplit(aso[,"sgb"],".",fixed=T),function(x){x[length(x)]})) %in%sgb & aso$phenotype%in% pathway, ]
+    aso2$sgb = unlist(lapply(strsplit(aso2[,"sgb"],".",fixed=T),function(x){x[length(x)]}))
+  }else{
+    aso2 = aso[aso[,"sgb"]%in%sgb & aso$phenotype%in% pathway, ]
+  }
+  
+  shapex = function(ano){
+    library(reshape2)
+    colnames(ano)=c("V1","V2","V3")
+    est = dcast(ano, V1 ~V2)
+    rownames(est)=est[,1]
+    est=est[,-1]
+    est			
+  }
+  print(nrow(aso2)) 
+  
+  # 如果是 0，检查 ID 是否真的匹配
+  print(head(aso$sgb))
+  print(head(mark_bracken$tax))
+  est =shapex(aso2[ ,c("sgb","phenotype","Estimate")])
+  est = est[, order(mark_mebo[pmatch(colnames(est),mark_mebo$tax),"coef"])]
+  qv = shapex(aso2[ ,c("sgb","phenotype","qvalue")])
+  qv=qv[pmatch(rownames(est),rownames(qv)), pmatch(colnames(est),colnames(qv))]
+  
+  cn=matrix("",nrow(qv),ncol(qv))
+  cn[qv<1e-5]="**"
+  cn[qv<=0.01 & qv>=1e-5]="*"
+  #cn[qv<=0.1 & qv>0.05]="+"
+  ## fecal only
+  #cn[qv<=0.2 & qv>0.05]="+"
+  
+  library(pheatmap)
+  library(RColorBrewer)
+  
+  
+  annotation_col = data.frame(mace1=sign(mark_mebo[pmatch(colnames(est),mark_mebo$tax),"coef"]))
+  rownames(annotation_col)=colnames(est)
+  
+  annotation_row = data.frame(mace=sign(mark_bracken[pmatch(rownames(est),mark_bracken$tax),"coef"]))
+  rownames(annotation_row)=rownames(est)
+  
+  ann_colors = list()
+  
+  cox =c("-1"="#2272a9","0"="white","1"="#74C476")
+  for( i in 1:ncol(annotation_row)){
+    haha = levels(factor(annotation_row[,i]))
+    vec = cox[pmatch(haha,names(cox))]
+    names(vec)=haha
+    ann_colors[[colnames(annotation_row)[i]]]=vec
+  }
+  for( i in 1:ncol(annotation_col)){
+    haha = levels(factor(annotation_col[,i]))
+    vec = cox[pmatch(haha,names(cox))]
+    names(vec)=haha
+    ann_colors[[colnames(annotation_col)[i]]]=vec
+  }	
+  
+  pheatmap(t(est),display_numbers=t(cn),
+           #col=rev(brewer.pal(8, "BrBG")),
+           col= colorRampPalette(c("#2272a9", "white", "#74C476"))(8),
+           breaks =c(min(est),quantile(est[est<0],c(0.05)),quantile(est[est<0],c(0.25)),quantile(est[est<0],c(0.5)),
+                     0,quantile(est[est>0],c(0.5)),quantile(est[est>0],c(0.75)),quantile(est[est>0],c(0.95)),max(est)),
+           fontsize_col=8,fontsize_row=8,
+           annotation_row=annotation_col,annotation_col=annotation_row,
+           annotation_legend=F,cluster_rows = T,
+           labels_row=as.character(mark_mebo[pmatch(colnames(est),mark_mebo$tax),v2]),
+           labels_col=as.character(mark_bracken[pmatch(rownames(est),mark_bracken$tax),v1]),
+           annotation_colors = ann_colors ,
+           clustering_distance_rows = "correlation", clustering_distance_cols = "correlation"
+  )
+  
+}
