@@ -1,0 +1,1065 @@
+mace_heat_microbe = function(out,  conf_mace2, sp=31, sp2 =11, varib="ftax1",topx=50,varsd2 ){
+  stat1 = out
+  stat1$sig = ifelse( stat1[,"Pr...z.."]<0.05, sign(stat1$coef),"")
+  stat1$jjtax = stat1[,varib]
+  stat1$panel ="mace"
+  df2 = stat1	
+  #====== taxon and heat, beta
+  # varsd2 = unique(c("SV","SYNTAX","NumberS_less12",
+  #	"AAO","RAD","RVD","MPA","IVS","LVPW","S","Early_diastolic_velocities",
+  #	"late_diastolic_velocities","Ratio_Ee","Ratio_EA","AO","LA","RVOT","lVEDD",
+  #"LVESD","MVE","AV","PV","TVE","MVA","LVEF","LVM","LVMI","ProBNP","TNT_HS","HBDH","FIB"))
+  
+  #aso_pa = process_sig(sp=7,pref2) # human2 and fecal metabolites,too week to detect pathwasy
+  #aso_pa$mebo_tax = out[pmatch(aso_pa$phenotype,out$tax,duplicates.ok=T),"ftax1"]
+  #aso_pa1 = aso_pa[aso_pa$qvalue<0.1,]
+  #out[grepl("Picol",out$ftax1),c("tax","ftax1")]
+  #aso_pa1[aso_pa1$phenotype=="MEDP319" ,]
+  #aso_pa[ grepl("tryptophan",aso_pa$sgb) ,]
+  aso = process_sig(sp,pref2)
+  aso$tax = aso$sgb
+  # also hard for kegg to find pathway or module
+  #scc = read.csv("D:\\work\\ACVD2020\\01.data\\result_7_30_21\\glm\\Fecel_Metabolomics.ko.scc.melt",sep="\t",as.is=T,head=F)
+  #scc$qvalue = p.adjust(scc[,4],method="BH")
+  #mod=read.table("D:\\work\\Meidi\\4_19_2017\\ko\\module_info.76",sep="\t",as.is=T,quote="")
+  
+  #scc$mod_tax = mod[pmatch(scc[,1],mod[,1],duplicates.ok=T),2]
+  #scc[scc[,2]=="MEDP319" & grepl("NAD|Tryptophan|Melatonin|Glucosinolate",scc$mod_tax),]
+  #scc[scc[,2]=="MEDN098" & grepl("NAD|Tryptophan|Melatonin|Glucosinolate",scc$mod_tax),]
+  
+  print(head(aso))
+  #### prepare data for plot
+  pathway =  varsd2 
+  sgb = as.character(unique(aso$tax))   
+  
+  aso2 = aso[aso[,"tax"]%in%sgb & aso$phenotype%in% pathway, ]	
+  # aso2[aso2$tax=="MEDN066",]
+  shapex = function(ano){
+    
+    colnames(ano)=c("V1","V2","V3")
+    est = dcast(ano, V1 ~V2)
+    rownames(est)=est[,1]
+    est=est[,-1]
+    est			
+  }
+  est =shapex(aso2[ ,c("tax","phenotype","Estimate")])
+  # est = est[order(mark_bracken[pmatch(rownames(est),mark_bracken$tax),"coef"]),]
+  pv = shapex(aso2[ ,c("tax","phenotype","Pr")])
+  pv=pv[pmatch(rownames(est),rownames(pv)), pmatch(colnames(est),colnames(pv))]
+  qv = shapex(aso2[ ,c("tax","phenotype","qvalue")])
+  qv=qv[pmatch(rownames(est),rownames(qv)), pmatch(colnames(est),colnames(qv))]
+  
+  # ========= get alpha * beta
+  pathway = pathway[pathway%in%colnames(est)]
+  cc1= conf_mace2[conf_mace2$tax%in%pathway, ]
+  pathway[is.na(pmatch(pathway,conf_mace2$tax))]
+  #conf_mace2[pmatch(c("SYNTAX","IVS","LVPW","lVEDD","LVM","LVMI","TNT_HS","FIB","TVE"),conf_mace2$tax),]
+  #cc2 = data.frame(X=c("SYNTAX","IVS","LVPW","lVEDD","LVM","LVMI","TNT_HS","FIB"),
+  #		coef = c(1,1,1,1,1,1,1,1),
+  #		exp.coef.=NA,
+  #		   se.coef. =NA,
+  #	         z =NA,
+  #		    Pr...z.. =NA,	
+  #		      qvalue =NA,
+  #		tax = c("SYNTAX","IVS","LVPW","lVEDD","LVM","LVMI","TNT_HS","FIB")
+  #)
+  #cc1 = data.frame(rbind(cc1,cc2))
+  cc1[which(cc1$tax =="TVE"),"coef"]=1 # according to zhong
+  #match(pathway, conf_mace2$tax)
+  ### 2024 04 06
+  cc1 = conf_mace2[match(pathway, conf_mace2$tax), ]
+  cc1[,1]=pathway
+  cc1[,"tax"]= pathway
+  
+  #### if no confounder adjust coef, use the univariate coef stable1_tradition_factor.coxph.univarite.csv
+  if( any(is.na(cc1[,"coef"]) ) ){
+    umace2 = read.csv("E:/gut/model/stable1_tradition_factor.coxph.univarite.csv")
+    head(umace2)
+    cc1[is.na(cc1[,"coef"]),"coef"]=umace2[ match(cc1[is.na(cc1[,"coef"]),1],umace2[,1]),"coef"]
+    cc1[is.na(cc1[,"qvalue"]),"qvalue"]=umace2[ match(cc1[is.na(cc1[,"qvalue"]),1],umace2[,1]),"qvalue"]
+  }
+  
+  # ====== get beta
+  pmatch(cc1$tax, colnames(est))
+  est1 = est[, pmatch(cc1$tax, colnames(est))]
+  qv1 = qv[,pmatch(cc1$tax, colnames(qv))]
+  pv1 = pv[,pmatch(cc1$tax, colnames(pv))]
+  # algorithm 1
+  heat = as.matrix(est1 * (qv1<0.25)) %*% as.matrix(data.frame(cc1$coef))
+  # algorithm 1,2022/4/6, coef of clinicals is vary too large
+  heat = as.matrix(est1 * (qv1<0.25)) %*% as.matrix(data.frame(sign(cc1$coef)*(-log10(cc1$qvalue)) ))
+  # algorithm 2
+  #heat1 = as.matrix(est1[,cc1$coef>0] * (rep(1,sum(cc1$coef>0)) )) %*% as.matrix(data.frame(cc1$coef[cc1$coef>0])) # +, mean bad
+  #heat2 = as.matrix(est1[,cc1$coef<0] * (rep(1,sum(cc1$coef<0)) )) %*% as.matrix(data.frame(cc1$coef[cc1$coef<0])) # -, mean good
+  # heat3 = heat1/sum(cc1$coef>0) + heat2/sum(cc1$coef<0) # if mean bad > mean good, bad!
+  #heat3 = as.matrix(est1 * (pv1<0.1)) %*% as.matrix(data.frame(cc1$coef))
+  heat3 = as.matrix(est1 * (pv1<0.1)) %*% as.matrix(data.frame(sign(cc1$coef)*(-log10(cc1$qvalue)) ))
+  #"coef","se.coef.","panel","jjtax","sig","tax"
+  heat = data.frame(jjtax = rownames(heat),coef = heat[,1], se.coef.=0, panel="heat_funcion",sig= sign(heat[,1]),tax= rownames(heat) )
+  
+  
+  # at leat two hit at qvalue<0.25 and sum qvalue <0.001
+  # heat$coef[(apply(qv,1,function(x){sum(x<0.25)})<2) & apply(qv,1,function(x){sum(x>1e-3)})  ]=0
+  # if number of  variables is small, 1 is ok.
+  if( table(apply(qv,1,function(x){sum(x<0.25)}))[names( table(apply(qv,1,function(x){sum(x<0.25)})) )=="2"] <10 ){
+    ### too less mgs
+    heat$coef[(apply(qv,1,function(x){sum(x<0.25)})<1)   ]=0
+  }else{
+    heat$coef[(apply(qv,1,function(x){sum(x<0.25)})<2)   ]=0
+  }
+  # table(heat$coef!=0)
+  
+  
+  h1 = heat[which(heat$coef!=0) ,]
+  h1$coef1 = heat3[pmatch(h1$tax, rownames(heat3)),1]
+  
+  df2 = df2[df2$tax%in%h1$tax,]
+  h1$sig[h1$sig==0]=""
+  h1$jjtax = out[pmatch(h1$tax, out$tax,duplicates.ok=T),varib]
+  # h1$mace_coef = round(out[pmatch(h1$tax, out$tax,duplicates.ok=T),"coef"],3)
+  # h1$consis = sign(h1$mace_coef) == sign(h1$coef)
+  # h1[grepl("\\+",h1$jjtax),]
+  # h1[grepl("0160",h1$jjtax),] 
+  # qv[grepl("0202",rownames(qv)),]
+  ### remove tax do not have mace result
+  h1 = h1[!is.na(h1$jjtax),]
+  df3 = data.frame(rbind(df2[,c("coef","se.coef.","panel","jjtax","sig","tax")],
+                         h1[,c("coef","se.coef.","panel","jjtax","sig","tax")]))
+  
+  
+  
+  
+  print("number of significant metabolites")
+  print(length(unique(df3$jjtax)))
+  print(h1[order(h1$coef),c("coef","jjtax")])
+  if( nrow(df3)/2 > 50 ){ # too many , just kept the top 50 
+    if( topx >nrow(h1) ){ # the one you extract is large than it have
+      df3 = df3[df3$tax%in%h1$tax[order(h1$coef)],]
+    }else{ #the one you extract is small than you have
+      df3 = df3[df3$tax%in%h1$tax[order(h1$coef)[c(c(1:topx/2),c((nrow(h1)-topx/2):nrow(h1)))]],]
+    }
+  }
+  df4 =df3
+  df4$jjtax = factor(df4$jjtax,levels=h1$jjtax[order(h1$coef)])
+  #df3$jjtax = factor(df3$jjtax,levels= nax[order(h1$coef)])
+  
+  #h1$r2 = imp1[pmatch(h1$jjtax,imp1$jjtax),"coef"]
+  
+  
+  
+  plot1 <- ggplot(df4 , aes(y = jjtax, x = coef,color=sig)) +
+    geom_point(shape = 18, size = 5) +  
+    geom_errorbarh(aes(xmin = coef-se.coef., xmax = coef+se.coef.), height = 0.25) +
+    geom_vline(xintercept = 0, color = "grey80", linetype = "dashed", cex = 1) +
+    # scale_y_continuous(name = "", breaks=1:4, labels = dat$label, trans = "reverse") +
+    xlab("Coef (95% CI)") + 
+    scale_color_manual(values=c("grey80","#65A8C4",  "#FF7AB6") )+
+    facet_wrap(~ panel, ncol=3,scale="free_x")+
+    ylab(" ") + 
+    #theme_bw() +
+    # theme(panel.border = element_blank(),
+    #     panel.background = element_blank(),
+    #     panel.grid.major = element_blank(), 
+    #    panel.grid.minor = element_blank(), 
+    #    axis.line = element_line(colour = "black"),
+    #   axis.text.y = element_text(size = 12, colour = "black"),
+    #   axis.text.x.bottom = element_text(size = 12, colour = "black"),
+    #   axis.title.x = element_text(size = 12, colour = "black"))
+    papaja::theme_apa(base_size = 11)+
+    guides(size=FALSE,shape=FALSE)+
+    theme(  axis.text.x = element_text(angle = 90, size = 11, vjust = 0),
+            strip.text = element_text(size=11),
+            panel.grid.major.y = element_line() )
+  
+  
+  list(plot1,h1,df4)
+  
+}
+sig_symbol = function(qvalue){
+  nn =rep("",length(qvalue))
+  nn[qvalue<0.25]=" +"
+  nn[qvalue<0.1 & qvalue>=0.05]=" *"
+  nn[qvalue<0.05 & qvalue>=0.01 ]=" **"
+  nn[qvalue<0.01]=" ***"
+  nn
+}
+process_sig=function(sp="3",pref2){
+  
+  ## all
+  #set_33...glm
+  f1=paste(pref2,"set_",sp,"...glm.csv",sep="")
+  glm_a=read.csv(f1,as.is=T,head=T,row.names=1)
+  
+  #	aa = glm_a[glm_a[,2]=="Center", ]
+  #hist(aa$Pr,breaks=20)
+  glm_a
+}
+
+process_imp=function(sp="3"){
+  pref2 = "E:/gut/model/"
+  ## all
+  #stra_1.imp_skin
+  f1=paste(pref2,"stra_",sp,".imp_skin.csv",sep="")
+  glm_a=read.csv(f1,as.is=T,head=T,row.names=1)
+  imp = glm_a
+  library(reshape2)
+  cc = melt(as.matrix(imp))
+  cc$top=0
+  cc1=c()
+  for(va in as.character(unique(cc$Var2))){
+    tmp = cc[as.character(cc$Var2)==va,]
+    tmp =tmp[order(tmp$value,decreasing=T)[1:15],]
+    tmp$top =1
+    cc1=rbind(cc1,tmp)
+  }
+  cc$top[pmatch(paste(cc1$Var1, cc1$Var2),paste(cc$Var1, cc$Var2))]=1
+  cc
+}
+
+process_r2=function(sp="3"){
+  pref2 = "E:/gut/model/"
+  ## all
+  #stra_1.imp_skin
+  f1=paste(pref2,"stra_",sp,".crsq_skin.csv",sep="")
+  glm_a=read.csv(f1,as.is=T,head=T,row.names=1)
+  
+  #	aa = glm_a[glm_a[,2]=="Center", ]
+  #hist(aa$Pr,breaks=20)
+  glm_a[which(glm_a$cut == glm_a[,"n.var"]),]
+}
+
+
+
+pref2="E:/gut/model/glm_more_update/"
+
+
+library(reshape2)
+library(papaja)
+library(RColorBrewer)	
+library(ggrepel)
+library(ggforestplot)
+library(ggplot2)
+library(pheatmap)
+
+library(ggtree)                                                                                                                                                                                                    
+library(phyloseq)
+library(dplyr)
+library(ggplot2)
+library(ggtreeExtra)
+library(tidyr)
+library(scales)
+library(ggnewscale)
+library(ggstar)
+
+#library(aplot)
+
+
+
+
+conf_mace2 = read.csv("E:/gut/model/MACE4_coxph/tradition_factor.coxph.mace4.more.update.csv",as.is=T,head=T)
+mark_mebo = read.csv("E:/gut/model/MACE4_coxph/mgs.coxph.mace4.more.update_tax.csv",head=T,row.names=1,as.is=T)
+mark_mebo$ftax1 = paste(gsub(" *","",mark_mebo$ftax1,fixed=T),sig_symbol(mark_mebo$qvalue),sep="")	
+#set_3   2021_2_3_MWAS_no_chinese.drug_bf.csv    Acvd2020.mgs.prof.rename.T.csv  csv-mgs
+
+#################### plot the top 60 heart function associated microbes
+#MGS.igc0089
+varsd2 = unique(c("SV","SYNTAX","NumberS_less12",
+                  "AAO","RAD","RVD","MPA","IVS","LVPW","S","Early_diastolic_velocities",
+                  "late_diastolic_velocities","Ratio_Ee","Ratio_EA","AO","LA","RVOT","lVEDD",
+                  "LVESD","MVE","AV","PV","TVE","MVA","LVEF","LVM","LVMI","FIB","ProBNP","TNT_HS",
+                  "CRP_G","HBDH"))
+disease_var = c("DM","hyperlip","HF","hyperT","arrhythmia","restenosis","stroke","SCAD","UA","MI","ACS")
+severity = c("SV","SYNTAX","NumberS_less12")
+Cardiac_ultra =c("AAO","RAD","RVD","MPA","IVS","LVPW","S",
+                 "Early_diastolic_velocities","late_diastolic_velocities","Ratio_Ee",
+                 "Ratio_EA","AO","LA","RVOT","lVEDD","LVESD","MVE","AV",
+                 "PV","TVE","MVA","LVEF","LVM","LVMI")
+inflam = c("CRP_G","FIB","SII","SRI")
+#�Ĺ��ܺ��ļ����˵�ѪҺѧ��־��
+heatfun =c("LDH","CKMB","ProBNP","TNT_HS")
+## Medications and demographic
+cder_var1= c("Center","Sex","drinking","smoking","BB","CCB","PPI","ACEI","Aspirin","Clop","ARB","AGIs","Biguanide",
+             "Tica","Statin")  # 52 high,23 lw for WBC, 
+cder_var2= c("age","SBP","DBP","HDLC","LDLC","TRIG","BMI","ALT","AST","eGFR","GLUC","CHOL")  # 52 high,23 lw for WBC, 	
+
+varsd2 = disease_var 
+varsd2 = inflam 
+varsd2 = severity 
+varsd2 = Cardiac_ultra 
+varsd2 = heatfun
+varsd2 = c(disease_var,inflam,severity ,heatfun,
+           c("IVS","LVPW","S","Ratio_Ee","Ratio_EA","lVEDD"
+             ,"LVESD","LVEF","LVM","LVMI")   )
+
+tar = mace_heat_microbe(mark_mebo,  conf_mace2, sp=3, varib="ftax1",topx=300,varsd2=varsd2) #topx : top xxx heart function metabolites.
+unique( tar[[3]][,"jjtax"])
+unique( tar[[3]][,"jjtax"])[grepl("mgs1237",unique( tar[[3]][,"jjtax"]))]
+mark_mebo2 = tar[[2]] 
+bnj = tar[[2]]
+
+
+mark_mebo2=mark_mebo2[(sign(mark_mebo2$coef) == sign(mark_mebo2$coef1))|
+                        (sign(bnj$coef) == sign(mark_mebo$coef)[pmatch(bnj$tax,mark_mebo$tax)]) ,] #2022/4/6
+
+mark_mebo2=mark_mebo2[mark_mebo2$tax%in%tar[[3]][,"tax"],]
+
+
+mark_mebo2$Pr...z.. =0.01
+colnames(mark_mebo2)[1]=c("ftax1")
+mark_mebo2$coef= as.numeric(mark_mebo2$coef)
+
+mark_mebo2$ftax1 = mark_mebo[pmatch(mark_mebo2$tax,mark_mebo$tax,duplicates.ok=T),"ftax1"]
+length(unique(mark_mebo2$ftax1))
+
+mark_mebo2$mace_coef = mark_mebo[pmatch(mark_mebo2$tax,mark_mebo$tax),"coef"]
+mark_mebo2$mace_qvalue = mark_mebo[pmatch(mark_mebo2$tax,mark_mebo$tax),"qvalue"]
+
+df <- data.frame(x = mark_mebo2$coef)
+# Histogram with kernel density
+ggplot(df, aes(x = x)) + 
+  geom_histogram(aes(y = ..density..),
+                 colour = 1, fill = "white") +
+  geom_density(lwd = 1, colour = 4,
+               fill = 4, alpha = 0.25)
+#write.csv(mark_mebo2,"D:\\work\\ACVD2020\\01.data\\result_1_4_22\\mgs3_heatmap.heartf.csv")
+
+heatmap_two_mark_clin_microbe = function(mark_bracken, conf_mace2, v1="ftax1",sp,varsd2=varsd2){
+  # varsd2 = unique(c("SV","SYNTAX","NumberS_less12",
+  #	"AAO","RAD","RVD","MPA","IVS","LVPW","S","Early_diastolic_velocities",
+  #	"late_diastolic_velocities","Ratio_Ee","Ratio_EA","AO","LA","RVOT","lVEDD",
+  #	"LVESD","MVE","AV","PV","TVE","MVA","LVEF","LVM","LVMI","FIB","ProBNP","TNT_HS",
+  #	"CRP_G","HBDH"))
+  
+  aso = process_sig(sp,pref2)
+  print(head(aso))
+  #### prepare data for plot
+  pathway =  varsd2 
+  # sgb = mark_bracken[mark_bracken[,"Pr...z.."]<0.05,"tax"] 
+  sgb = mark_bracken[,"tax"] 
+  
+  
+  aso2 = aso[aso[,"sgb"]%in%sgb & aso$phenotype%in% pathway, ]
+  aso2$sgb1 = mark_bracken[pmatch(aso2$sgb,mark_bracken$tax,duplicates.ok=T),v1]
+  
+  shapex = function(ano){
+    colnames(ano)=c("V1","V2","V3")
+    est = dcast(ano, V1 ~V2)
+    rownames(est)=est[,1]
+    est=est[,-1]
+    est			
+  }
+  est =shapex(aso2[ ,c("sgb","phenotype","Estimate")])
+  est = est[order(mark_bracken[pmatch(rownames(est),mark_bracken$tax),"coef"]),]
+  qv = shapex(aso2[ ,c("sgb","phenotype","qvalue")])
+  pv = shapex(aso2[ ,c("sgb","phenotype","Pr")])
+  qv=qv[pmatch(rownames(est),rownames(qv)), pmatch(colnames(est),colnames(qv))]
+  pv=pv[pmatch(rownames(est),rownames(pv)), pmatch(colnames(est),colnames(pv))]
+  
+  cn=matrix("",nrow(qv),ncol(qv))
+  #cn[qv<0.01]="**"
+  #cn[qv< 0.05 & qv>=0.01]="*"
+  #cn[qv>=0.05 & qv< 0.15 ]="+"
+  
+  #cn[qv<0.25]=" +"
+  cn[qv<0.1 & qv>=0.05]=" *"
+  cn[qv<0.05 ]=" **"
+  
+  ### 2024 04 06
+  pathway = pathway[pathway%in%colnames(est)]
+  
+  
+  
+  
+  
+  annotation_row = data.frame(mace=sign(mark_bracken[pmatch(rownames(est),mark_bracken$tax),"coef"]))
+  rownames(annotation_row)=rownames(est)
+  
+  ann_colors = list()
+  cox =c("-1"="#65A8C4","0"="white","1"="#FF7AB6")
+  for( i in 1:ncol(annotation_row)){
+    haha = levels(factor(annotation_row[,i]))
+    vec = cox[pmatch(haha,names(cox))]
+    names(vec)=haha
+    ann_colors[[colnames(annotation_row)[i]]]=vec
+  }
+  labx =mark_bracken[pmatch(rownames(est),mark_bracken$tax),v1]
+  #id = apply(qv,2,function(x){any(x<0.15)})
+  # id = apply(qv,2,function(x){sum(x<0.15)>1})
+  id = apply(qv,2,function(x){any(x<0.1)}) & apply(qv,2,function(x){sum(x<0.25)>1})
+  id1 = apply(qv[,id],1,function(x){any(x<0.1)})
+  # labx[id1][grepl("\\*",labx[id1])]
+  pheat = pheatmap(est[id1,id],display_numbers=cn[id1,id],
+                   #col=rev(brewer.pal(8, "BrBG")),
+                   #col= colorRampPalette(c("#65A8C4", "white", "#FF7AB6"))(8),
+                   col= colorRampPalette(c("#65c5d9","white", "#f3e92a" ))(8),
+                   breaks =c(min(est),quantile(est[est<0],c(0.05)),quantile(est[est<0],c(0.15)),quantile(est[est<0],c(0.5)),
+                             0,quantile(est[est>0],c(0.75)),quantile(est[est>0],c(0.85)),quantile(est[est>0],c(0.95)),max(est)),
+                   fontsize_col=10,fontsize_row=8,
+                   annotation_row=annotation_row,
+                   annotation_legend=F,
+                   cluster_rows = T,
+                   labels_row=labx[id1],
+                   annotation_colors = ann_colors ,
+                   clustering_distance_rows = "correlation", clustering_distance_cols = "correlation"
+  )
+  
+  # ========= get alpha * beta
+  cc1= conf_mace2[conf_mace2$tax%in%pathway, ]
+  pathway[is.na(pmatch(pathway,conf_mace2$tax))]
+  #conf_mace2[pmatch(c("SYNTAX","IVS","LVPW","lVEDD","LVM","LVMI","TNT_HS","FIB","TVE"),conf_mace2$tax),]
+  #cc2 = data.frame(X=c("SYNTAX","IVS","LVPW","lVEDD","LVM","LVMI","TNT_HS","FIB"),
+  #		coef = c(1,1,1,1,1,1,1,1),
+  #		exp.coef.=NA,
+  #		   se.coef. =NA,
+  #	         z =NA,
+  #		    Pr...z.. =NA,	
+  #		      qvalue =NA,
+  #		tax = c("SYNTAX","IVS","LVPW","lVEDD","LVM","LVMI","TNT_HS","FIB")
+  #)
+  #cc1 = data.frame(rbind(cc1,cc2))
+  cc1[cc1$tax =="TVE","coef"]=1 # according to zhong
+  
+  ## 2024 04 06
+  cc1 = conf_mace2[match(pathway, conf_mace2$tax), ]
+  cc1[,1]=pathway
+  cc1[,"tax"]= pathway
+  #### if no confounder adjust coef, use the univariate coef
+  if( any(is.na(cc1[,"coef"]) ) ){
+    umace2 = read.csv("E:/gut/model/stable1_tradition_factor.coxph.univarite.csv")
+    head(umace2)
+    cc1[is.na(cc1[,"coef"]),"coef"]=umace2[ match(cc1[is.na(cc1[,"coef"]),1],umace2[,1]),"coef"]
+    cc1[is.na(cc1[,"qvalue"]),"qvalue"]=umace2[ match(cc1[is.na(cc1[,"qvalue"]),1],umace2[,1]),"qvalue"]
+  }
+  
+  # ====== get beta
+  pmatch(cc1$tax, colnames(est))
+  est1 = est[, pmatch(cc1$tax, colnames(est))]
+  qv1 = qv[,pmatch(cc1$tax, colnames(qv))]
+  pv1 = pv[,pmatch(cc1$tax, colnames(pv))]
+  # algorithm 1
+  heat = as.matrix(est1 * (qv1<0.15)) %*% as.matrix(data.frame(cc1$coef))
+  # algorithm 1,2022/4/6, coef of clinicals is vary too large
+  heat = as.matrix(est1 * (qv1<0.25)) %*% as.matrix(data.frame(sign(cc1$coef)*(-log10(cc1$qvalue)) ))
+  
+  #"coef","se.coef.","panel","jjtax","sig","tax"
+  heat = data.frame(jjtax = rownames(heat),coef = heat[,1], se.coef.=0, panel="heat_funcion",sig= sign(heat[,1]),tax= rownames(heat) )
+  #heat$coef[(apply(qv,1,function(x){sum(x<0.2)})<2) & apply(qv,1,function(x){sum(x>1e-3)})  ]=0
+  #h1 = heat[which(heat$coef!=0) ,]
+  h1= heat
+  h1$sig[h1$sig==0]=""
+  h1$jjtax = mark_bracken[pmatch(h1$tax, mark_bracken$tax,duplicates.ok=T),v1]
+ 
+  df3 = data.frame(	h1[,c("coef","se.coef.","panel","jjtax","sig","tax")])
+  df3 = df3[pmatch(rownames(est[id1,id])[pheat$tree_row$order],df3$tax,duplicates.ok=T),]
+  df3$jjtax = factor(df3$jjtax, levels=rev(labx[id1][pheat$tree_row$order]) )
+  # df3[grepl("\\*",df3$jjtax),]
+  
+  print("number of significant metabolites")
+  print(length(unique(df3$jjtax)))
+  print(h1[order(h1$coef),c("coef","jjtax")])
+  #if( nrow(df3)/2 >50 ){ # too many , just kept the top 50 
+  #	df3 = df3[df3$tax%in%h1$tax[order(h1$coef)[c(c(1:25),c((nrow(h1)-25):nrow(h1)))]],]
+  #}
+  
+  
+  # explain R2, point size
+  
+  #	imp = process_r2(sp2) # set bracken for lipids/metabolites
+  #	imp[imp[,"error.r2"]<0,"error.r2"] = 0.01
+  #	imp[pmatch(df3$tax,imp$var),]
+  #	df3$r2 = imp[pmatch(df3$tax,imp$var),"error.r2"]
+  #	range(df3$r2)
+  
+  #imp[imp$var=="MEDN562",]
+  
+  # permanova r2
+  #	permx = process_perm(sp3)
+  #	df3$perm_q = ifelse( permx[pmatch(df3$tax,permx$var),"qvalue"]<0.05,1,0) 
+  #	df3$perm_r2 = permx[pmatch(df3$tax,permx$var),"r2"]
+  
+  
+  
+  codx =c("#65c5d9","grey80","#f3e92a") 
+  names(codx)=c(-1,0,1)
+  shapex =c(5,18)
+  names(shapex)=c("0","1")
+  
+  
+  plot1 <- ggplot(df3 , aes(y = jjtax, x = coef,color=sig)) +
+    geom_point(shape = 18, size = 5) +  
+    geom_errorbarh(aes(xmin = coef-se.coef., xmax = coef+se.coef.), height = 0.25) +
+    geom_vline(xintercept = 0, color = "grey80", linetype = "dashed", cex = 1) +
+    # scale_y_continuous(name = "", breaks=1:4, labels = dat$label, trans = "reverse") +
+    xlab("Coef (95% CI)") + 
+    # scale_color_manual(values=c("grey80","#65A8C4",  "#FF7AB6") )+
+    scale_color_manual(values= codx )+
+    facet_wrap(~ panel, ncol=3,scale="free_x")+
+    ylab(" ") + 
+    #theme_bw() +
+    # theme(panel.border = element_blank(),
+    #     panel.background = element_blank(),
+    #     panel.grid.major = element_blank(), 
+    #    panel.grid.minor = element_blank(), 
+    #    axis.line = element_line(colour = "black"),
+    #   axis.text.y = element_text(size = 12, colour = "black"),
+    #   axis.text.x.bottom = element_text(size = 12, colour = "black"),
+    #   axis.title.x = element_text(size = 12, colour = "black"))
+    papaja::theme_apa(base_size = 11)+
+    guides(size=FALSE,shape=FALSE)+
+    theme(  axis.text.x = element_text(angle = 90, size = 11, vjust = 0),
+            strip.text = element_text(size=11),
+            panel.grid.major.y = element_line() )
+  
+  
+  d <- est[id1,id]
+  rownames(d) <- labx[id1]
+  
+  hc <- hclust(dist(d))
+  hcc <- hclust(dist(t(d)))
+  phr <- ggtree(hc)
+  phc <- ggtree(hcc) + layout_dendrogram()
+  
+  d <- data.frame(d)
+  d$gene <- rownames(d)
+  cnx = data.frame(cn[id1,id])
+  rownames(cnx) <- labx[id1]
+  cnx$gene <- rownames(cnx)
+  colnames(cnx) = colnames(d)
+  dd <- gather(d, 1:(ncol(d)-1), key="condition", value='expr')
+  cnx <- gather(cnx, 1:(ncol(cnx)-1), key="condition", value='expr')
+  cnx=cnx[pmatch(paste(dd[,1],dd[,2]),paste(cnx[,1],cnx[,2]) ),]
+  dd$symbol = cnx$expr
+  
+  # dd[grepl("\\*",dd$gene),]
+  # rf importance
+  imp = process_imp(sp)
+  imp$sgb =mark_bracken[pmatch(imp$Var1,mark_bracken$tax,duplicates.ok=T),v1]
+  
+  imp=imp[pmatch(paste(dd[,1],dd[,2]),paste(imp[,"sgb"],imp[,"Var2"])),]	
+  dd$rfimp = imp$top
+  dd$rfimp[is.na(dd$rfimp)]=0
+  
+  bx =c(min(dd$expr),quantile(dd$expr[dd$expr<0],c(0.05)),quantile(dd$expr[dd$expr<0],c(0.25)),quantile(dd$expr[dd$expr<0],c(0.5)),
+        0,quantile(dd$expr[dd$expr>0],c(0.5)),quantile(dd$expr[dd$expr>0],c(0.75)),quantile(dd$expr[dd$expr>0],c(0.95)),max(dd$expr))
+  #bx =c(min(dd$expr),quantile(dd$expr[dd$expr<0],c(0.05)),quantile(dd$expr[dd$expr<0],c(0.25)),quantile(dd$expr[dd$expr<0],c(0.5)),
+  #							0,quantile(dd$expr[dd$expr>0],c(0.5)),quantile(dd$expr[dd$expr>0],c(0.75)),quantile(dd$expr[dd$expr>0],c(0.95)),min(dd$expr))
+  
+  
+  
+  names(bx)=NULL
+  
+  jxx1 = dcast(dd[,c("gene","condition","expr")], gene ~ condition )
+  rownames(jxx1) = jxx1[,1]
+  jxx1 =jxx1[,-1]
+  jxx1[is.na(jxx1)]=0
+  jpp = pheatmap(jxx1)
+  dd$gene = factor(dd$gene, levels= rownames(jxx1)[jpp$tree_row$order] )
+  dd$condition = factor(dd$condition, levels= colnames(jxx1)[jpp$tree_col$order] )
+  
+  p <- ggplot(dd, aes(condition,gene,label = symbol)) + 
+    geom_tile(aes(fill=expr,  color=factor(rfimp),size=factor(rfimp)) ) + 
+    geom_text(color="black")+
+    scale_fill_gradientn(
+      colors   = colorRampPalette(c("#65c5d9","white", "#f3e92a" ))(9), 
+      #colours = c("#65c5d9","white", "#f3e92a"),
+      labels=round(bx,3),
+      breaks    = bx,
+      values = rescale( bx, from = c(min(dd$expr),max(dd$expr)) ),
+      limits=c(min(dd$expr),max(dd$expr)),
+      na.value = "grey80"
+    )+
+    scale_color_manual(values=c("black", "#d53e4f"))+
+    scale_size_manual(values=c(0.5, 2))+
+    scale_y_discrete(position="right") +
+    theme_minimal() + 
+    theme(  axis.text.x = element_text(angle = 90, size = 11,hjust=0.95,vjust=0.2 ) )+
+    xlab(NULL) + ylab(NULL) 
+  pout = p
+  
+  dd_df3 = df3
+  colnames(dd_df3)[colnames(dd_df3)=="jjtax"]="gene"
+  
+  g <- ggplot(dd_df3 , aes(y =gene, x = coef,color=sig)) +
+    geom_point(shape = 18) +  
+    #geom_errorbarh(aes(xmin = coef-1.96*se.coef., xmax = coef+1.96*se.coef.), height = 0.25) +
+    geom_vline(xintercept = 0, color = "grey80", linetype = "dashed", cex = 1) +
+    scale_color_manual(values= codx )+
+    scale_shape_manual(values= shapex )+
+    theme_minimal() + 
+    theme(axis.text.y = element_blank(), 
+          axis.ticks.y = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank()) +
+    xlab(NULL) + ylab(NULL) 
+  
+  
+  
+  ##
+  imp1 = process_r2(sp) # prediction heart function for fecal metabolites
+  imp1[imp1[,"error.r2"]<0,"error.r2"] = 0.01
+  imp1 = imp1[pmatch(unique(dd$condition), imp1$var),]
+  imp1$mace_coef =cc1[pmatch(imp1$var,cc1$X),"coef"]
+  imp1$mace_sig =ifelse( cc1[pmatch(imp1$var,cc1$X),"Pr...z.."]<0.05,1,0)
+  colnames(imp1)[1]="condition"
+  imp1$mace = sign(imp1$mace_coef)
+  imp1$mace[imp1$mace_sig==0]=0
+  
+  
+  codx1 =c("#65A8C4","grey80","#FF7AB6") 
+  names(codx1)=c(-1,0,1)
+  
+  p_top = ggplot(imp1 , aes(y= round(error.r2*100), x = condition ,fill=factor(mace) )) +
+    geom_bar(stat='identity',position="dodge",color=NA,width=0.6) +	
+    scale_fill_manual(values = codx1 )+ 
+    scale_y_continuous(expand = expansion(mult = c(0, 0), 
+                                          add = c(0, 0)))+
+    xlab(NULL) + ylab(NULL) +
+    papaja::theme_apa(base_size = 10)+
+    guides(color=FALSE,size=FALSE,shape=FALSE,fill=FALSE)+
+    theme(  axis.text.x =  element_blank(),
+            #axis.text.y = element_blank(), 
+            axis.ticks.y = element_blank(),
+            panel.grid.minor = element_blank(),
+            panel.grid.major.y = element_line() )
+  
+  
+  
+  
+  
+  #p %>% insert_left(phr, width=.3) %>% 
+  #insert_top(p_top,height=0.1) %>%
+  #  insert_right(g, width=.4) 
+  
+  
+  
+  #GTEx
+  ### tree part
+  ### uhgg tree 
+  tree_file="bac120_iqtree.nwk"
+  mpa_tree <- ape::read.tree(tree_file)
+  ###  IGG toxomany
+  toxo  = read.csv("IGG_id.csv",as.is=T,head=F)
+  #           ID          Phylum                Type      Size
+  # 1   t637000026   Bacteroidetes Potential pathogens 312.80488
+  
+  ### mgs id and tip label corresponding file
+  mgs_uhgg = read.table("E:/gut/model/9.9M.mgs.uhgg.blast.id90.cov80.tops20.kep4",as.is=T,sep="\t",head=F)
+  head(mgs_uhgg)
+  
+  mgs_uhgg[mgs_uhgg[,1]=="MGS.igc0053",] #GUT_GENOME096250 #Clostridium innocuum-mgs0053
+  mgs_uhgg[mgs_uhgg[,1]=="MGS.igc0093",] #GUT_GENOME096124 #Erysipelotrichaceae bacterium 3 1 53-mgs0093
+  mgs_uhgg[mgs_uhgg[,1]=="MGS.igc0034",] #GUT_GENOME070485 #""Clostridium clostridioforme-mgs1018"
+  mgs_uhgg[mgs_uhgg[,1]=="MGS.igc0008",] #GUT_GENOME000133 #""Hungatella hathewayi-mgs0008"
+  mgs_uhgg[mgs_uhgg[,1]=="MGS.igc0049",] #GUT_GENOME000725 #""Hungatella hathewayi-mgs0049
+  
+  #mark_mebo$ftax1[grepl("hathewayi",mark_mebo$ftax1)]
+  
+  ## get the tip label for mgs that need to plot.
+  mgsids =  unlist( lapply( strsplit(as.character(unique(dd$gene)),"-mgs",fixed=T),function(x){ paste("MGS.igc",x[length(x)],sep="") }) )
+  mgsids =  unlist( lapply( strsplit(as.character(unique(mgsids))," ",fixed=T),function(x){ x[1] }) )
+  idds = data.frame(mgsids,tiplable = mgs_uhgg[pmatch(mgsids,mgs_uhgg[,1]),4],mgstax = as.character(unique(dd$gene)))
+  idds[which(idds$mgsids =="MGS.igc1237"),"tiplable"]="GUT_GENOME096124"
+  idds[which(idds$mgsids =="MGS.igc1484"),"tiplable"]="GUT_GENOME000725"
+  idds  = idds[idds$tiplable != "Unclassified",]
+  #idds[idds$tiplable%in%c("GUT_GENOME096124","GUT_GENOME000725"),]
+  ## idds[grepl("\\*",idds$mgstax),]
+  idds =  idds[idds$tiplable %in% mpa_tree$tip.label,]
+  # idds[!idds$tiplable %in% mpa_tree$tip.label,]
+  idds$Phylum = gsub("p__","",unlist(lapply(strsplit(toxo[pmatch(idds$tiplable,toxo[,1],duplicates.ok=T),ncol(toxo)-1],";",fixed=T),function(x){x[2]})))
+  idds$genus = gsub("g__","",unlist(lapply(strsplit(toxo[pmatch(idds$tiplable,toxo[,1],duplicates.ok=T),ncol(toxo)-1],";",fixed=T),function(x){x[length(x)-2]})))
+  
+  idds = idds[!duplicated(idds$tiplable),]
+  idds$Type = ifelse( mark_bracken[pmatch(idds$mgsids,mark_bracken$tax),"mace_qvalue"]<0.25,"Mace","Non")
+  #idds$Size  = mark_bracken[pmatch(idds$mgsids,mark_bracken$tax),"abundance"]
+  
+  idds1 =idds[,c("tiplable","Phylum","Type","mgsids","mgstax","genus")]
+  colnames(idds1)[1]="ID"
+  idds1$coef = dd_df3[pmatch(idds1$mgsids,dd_df3$tax),"coef"]
+  idds1$sig = dd_df3[pmatch(idds1$mgsids,dd_df3$tax),"sig"]
+  idds1$mgstax1 = idds1$mgstax
+  #### old version
+  # idds1$mgstax1[ (abs(idds1$coef)<0.75) &  ( !(grepl("\\+",idds1$mgstax) | grepl("\\*",idds1$mgstax)) )]=""
+  ### too many taxon, just the top 25%, if 35 just show
+  if( nrow(idds1)>35 ){
+    idds1$mgstax1[ (abs(idds1$coef) < as.numeric( quantile( abs(idds1$coef),probs =0.6,na.rm=T ))) &
+                     ( !(grepl("\\+",idds1$mgstax) | grepl("\\*",idds1$mgstax)) )]=""
+    
+  }			
+  
+  # idds1[grepl("hathewayi",idds1$mgstax),]
+  # idds1[grepl("\\*",idds1$mgstax),]
+  #  idds1[grepl("f__Lachnospiraceae",idds1$genus),]
+  ### extract the subtree
+  nhx_reduced <- ape::keep.tip(mpa_tree, unique(idds1$ID))
+  nodeids <- nodeid(nhx_reduced, nhx_reduced$tip.label[nhx_reduced$tip.label%in%idds[idds$genus=="f__Lachnospiraceae","tiplable"]])
+  nodedf <- data.frame(node=nodeids)
+  if( sum(idds$genus=="f__Lachnospiraceae")>0 ){
+    clade <- MRCA(nhx_reduced, nhx_reduced$tip.label[nhx_reduced$tip.label%in%idds[idds$genus=="f__Lachnospiraceae","tiplable"]])
+    p <- ggtree(nhx_reduced, layout="fan", size=0.15, open.angle=15, branch.length="none")	
+    p <-  rotate_tree(p, 90)
+    p <- p+	geom_hilight(node = clade,  fill = "yellow", extend = 0.0017) 
+  }else{
+    p <- ggtree(nhx_reduced, layout="fan", size=0.15, open.angle=15, branch.length="none")	
+    p <-  rotate_tree(p, 90)
+  }
+  
+  #p <- ggtree(nhx_reduced) +  
+  #  geom_tiplab(size = 4) +
+  #  geom_text2(aes(subset=!isTip, label=node), # labels all the nodes in the tree
+  #            size = 5,
+  #            color = "darkred", 
+  #            hjust = 1, 
+  #            vjust = 1) 
+  #p + geom_hilight(  # highlights node 39 in blue, "extend =" allows us to define the length of the color block
+  #	 data=nodedf, mapping=aes(node=node),
+  #	 fill = "steelblue",
+  #	 extend = 0.0017)
+
+  dd$mgsid =unlist( lapply( strsplit(as.character(unique(dd$gene)),"-mgs",fixed=T),function(x){ paste("MGS.igc",x[length(x)],sep="") }) )
+  dd$mgsid = unlist( lapply( strsplit(as.character(unique(dd$mgsid))," ",fixed=T),function(x){ x[1] }) )
+  #dd$ID = idds[pmatch(dd$mgsid,idds$mgsids,duplicates.ok=T),"tiplable"]
+  #dd_1 = dd[!is.na(dd$ID),c("ID","condition","expr","symbol","rfimp")]
+  #dd_1 = dd[!is.na(dd$ID),c("ID","condition","expr","symbol","rfimp")]
+ # bx =c(min(dd_1$expr),quantile(dd_1$expr[dd_1$expr<0],c(0.05)),quantile(dd_1$expr[dd_1$expr<0],c(0.25)),quantile(dd_1$expr[dd_1$expr<0],c(0.5)),
+  #      0,quantile(dd_1$expr[dd_1$expr>0],c(0.5)),quantile(dd_1$expr[dd_1$expr>0],c(0.75)),quantile(dd_1$expr[dd_1$expr>0],c(0.95)),max(dd_1$expr))
+  
+  #names(bx)=NULL
+  #修改版
+  dd$ID = idds[pmatch(dd$mgsid,idds$mgsids,duplicates.ok=T),"tiplable"]
+  # --- 修改后的 dd_1 处理逻辑 ---
+  dd_1 = dd[!is.na(dd$ID),c("ID","condition","expr","symbol","rfimp")]
+  # 1. 定义白名单 (根据你上传的图片)
+  
+  target_vars <- c(
+    "TNT_HS",    # 高敏肌钙蛋白
+    "eGFR",      # 肾小球滤过率
+    "ProBNP",    # 前体脑钠肽
+    "LVESD",     # 左心室收缩末期内径
+    "LDH",       # 乳酸脱氢酶
+    "LVM",       # 左心室质量
+    "LVEF",      # 左心室射血分数
+    "lVEDD",     # 左心室舒张末期内径
+    "LA",        # 左心房内径
+    "MPA",       # 肺动脉主干
+    "MI",        # 心肌梗死/指数
+    "restenosis",# 再狭窄
+    "BMI",       # 体重指数
+    "SRI",       # 应变率成像/相关指标
+    "S"          # 收缩期峰值速度等
+  )
+  # 2. 过滤数据       "LDH","S"
+  dd_1 <- dd_1[dd_1$condition %in% target_vars, ]
+  unique(dd_1$condition)
+  # 3. 锁定顺序 (防止 ggplot 自动按字母排序)
+  my_ordered_vars <- c("S","LDH","LVM","LVEF","LVESD","lVEDD","ProBNP","TNT_HS") 
+  
+  # 2. 强制应用这个顺序到因子层级
+  # 假设你的表型列叫 condition
+  dd_1$condition <- factor(dd_1$condition, levels = my_ordered_vars)
+  
+  # --- 重新计算色阶范围（可选，为了让颜色对比更明显） ---
+  bx = c(min(dd_1$expr), quantile(dd_1$expr[dd_1$expr<0], c(0.05, 0.25, 0.5)),
+         0, quantile(dd_1$expr[dd_1$expr>0], c(0.5, 0.75, 0.95)), max(dd_1$expr))
+  names(bx) = NULL
+  
+  
+  
+  
+  p_heatmap <- ggplot(dd_1, aes(x=factor(condition),y = ID,label = symbol)) + 
+    geom_tile(aes(fill=expr,  color=factor(rfimp),size=factor(rfimp)) ) + 
+    geom_text(color="black")+
+    scale_fill_gradientn(
+      colors   = colorRampPalette(c("#65c5d9","white", "#f3e92a" ))(9), 
+      #colours = c("#65c5d9","white", "#f3e92a"),
+      labels=round(bx,3),
+      breaks    = bx,
+      values = rescale( bx, from = c(min(dd$expr),max(dd$expr)) ),
+      limits=c(min(dd$expr),max(dd$expr)),
+      na.value = "grey80"
+    )+
+    scale_color_manual(values=c("black", "#d53e4f"))+
+    scale_size_manual(values=c(0.5, 2))+
+    scale_y_discrete(position="right") +
+    theme_minimal() + 
+    theme(  axis.text.x = element_text(angle = 90, size = 11,hjust=0.95,vjust=0.2 ) )+
+    xlab(NULL) + ylab(NULL) 
+  
+  
+  #p_heatmap %>% insert_left(p, width=.3)
+  
+  
+  g <- ggplot(dd_df3 , aes(y =gene, x = coef,color=sig)) +
+    geom_point(shape = 18) +  
+    #geom_errorbarh(aes(xmin = coef-1.96*se.coef., xmax = coef+1.96*se.coef.), height = 0.25) +
+    geom_vline(xintercept = 0, color = "grey80", linetype = "dashed", cex = 1) +
+    scale_color_manual(values= codx )+
+    scale_shape_manual(values= shapex )+
+    theme_minimal() + 
+    theme(axis.text.y = element_blank(), 
+          axis.ticks.y = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.grid.major.y = element_blank()) +
+    xlab(NULL) + ylab(NULL) 
+  
+  dd_2= dd_1[dd_1$symbol !="",]
+  
+  #NM color
+  # backgroup grey: eeeeeb
+  #b6802b
+  #58b3e4
+  
+  #shape2=c(1,3,29,15,1)
+  shape2=c(1,3,15,1)
+  names(shape2) =c(" *" , " **","Mace","Non" ) 
+  factor(dd_2$symbol)
+  n1 <- length(unique(dd_1$ID))
+  n2 <- length(unique(dd_1$condition))
+  fruitlist <- geom_fruit_list(
+    geom_fruit(data=dd_1, geom=geom_tile,
+               mapping=aes(y=ID, x=factor(condition),  color=factor(rfimp),size=factor(rfimp), fill=expr),
+               pwidth=2,linetype = 1,offset = 0.1,width=0.99,
+               axis.params=list(
+                 size=8,
+                 axis="x", # add axis text of the layer.
+                 text.angle=0, # the text size of axis.
+                 hjust=0  # adjust the horizontal position of text of axis.
+               )),
+    #geom_axis_text(angle=-45, hjust=0, size=1.5)+
+    scale_color_manual(values=c(alpha("00000000", 0), "#d53e4f")),
+    scale_fill_gradientn(
+      colors   = colorRampPalette(c("#2272a9","white", "#85c474" ))(9), 
+      # NM color
+      # colors   = c("#b6802b","#e5a023","#eab12d","#f4d799","#f2ce7f","#bae0f7","#99d1f0","#78c2eb","#58b3e4"), 
+      labels=round(bx,3),
+      breaks    = bx,
+      values = rescale( bx, from = c(min(dd_1$expr),max(dd_1$expr)) ),
+      limits=c(min(dd_1$expr),max(dd_1$expr)),
+      na.value = "grey95",
+      guide=guide_legend(keywidth = 0.3, 
+                         keyheight = 0.3, order=4)),
+    scale_size_manual(values=c(0.1, 1)) ,
+    # geom_fruit(data=dd_1, geom=geom_text,
+    # 			 mapping=aes(y=ID, x=factor(condition), label = symbol))
+    new_scale_fill(),
+    geom_fruit(
+      
+      data = dd_2,
+      geom = geom_star,
+      mapping = aes(y=ID, x=factor(condition),starshape=symbol),
+      pwidth=2,
+      size = 1.5,
+      fill = "black",
+      color = NA,
+      starstroke = 0,
+      offset = 0.1
+    ),
+    scale_starshape_manual(values=shape2,
+                           guide=guide_legend(keywidth = 0.5, 
+                                              keyheight = 0.5, order=2),
+                           na.translate=FALSE)
+    
+    
+  )
+  
+  
+  
+  p <- p + fruitlist 
+  
+  ##p1+   geom_fruit( data = data.frame(y = c(0, n1) + 0.5, x = rep(2:n2, each = 2) - 0.5),
+  #				 geom =  geom_line,
+  #     		mapping =	aes(x = x, y = y, group = x),
+  #				offset = 0.1,
+  #				pwidth=2 ) # Horizonal lines
+  
+  
+  codx2 =c("#2272a9","white", "grey80" ) 
+  names(codx2)=c(-1,0,1)
+  
+  p <- p + new_scale_fill() +
+    geom_fruit(data=idds1, geom=geom_bar,
+               mapping=aes(y=ID, x=abs(coef),fill=factor(sig)),
+               pwidth=10, 
+               width=0.3,
+               orientation="y", 
+               stat="identity", offset = 0.01
+    ) +
+    scale_fill_manual(values= codx2 )+
+    geom_treescale(fontsize=2, linesize=0.3, x=4.9, y=0.1) +
+    theme(legend.position=c(0.93, 0.5),
+          legend.background=element_rect(fill=NA),
+          legend.title=element_text(size=6.5),
+          legend.text=element_text(size=4.5),
+          legend.spacing.y = unit(0.02, "cm"),
+    )
+  
+  
+  
+  
+  
+  p <- p %<+% idds1 + new_scale_fill() +
+    geom_star(
+      mapping=aes(fill=Phylum, starshape=Type),
+      position="identity",starstroke=0.1,size=3) +
+    scale_fill_manual(values=c("#FFC125","#87CEFA","#7B68EE","#808080",
+                               "#800080", "#9ACD32","#D15FEE","#FFC0CB",
+                               "#EE6A50","#8DEEEE", "#006400","#800000",
+                               "#B0171F","#191970"),
+                      guide=guide_legend(keywidth = 0.5, 
+                                         keyheight = 0.5, order=1,
+                                         override.aes=list(starshape=15)),
+                      na.translate=FALSE)+
+    geom_tiplab(aes(label = mgstax1), linesize=0, offset = 54, size=6) 
+  
+  # scale_size_continuous(range = c(1, 2.5),
+  #              guide = guide_legend(keywidth = 0.5, 
+  #                          keyheight = 0.5, order=3,
+  #                         override.aes=list(starshape=15)))
+  
+  #          ID              Sites  Abundance
+  # 1 t645951833 Stool (prevalence) 0.51219512
+  
+  p <- p + xlim(0, 150)
+  p1 <-list(p, pout, dd)
+  
+  	 #ggsave("E:/gut/model/figure3/mgs4_heatmap.pdf", p, 
+  		# 		width=18,height=18)  
+}
+
+p = heatmap_two_mark_clin_microbe(mark_mebo2, conf_mace2, v1="ftax1",sp=3,varsd2=varsd2)
+
+
+mp2= read.csv("E:/gut/model/Acvd2020.mgs.prof.rename.csv",row.names=1,head=T)
+## read sample info
+library(openxlsx)
+info = read.xlsx("E:/gut/model/2021-2-3 MWAS_251216.xlsx") #2022/3/30
+rownames(info) <- info[,1]
+colnames(info)=gsub("\\.$","",gsub("^X.","",colnames(info)))
+dim(info)
+head(info)
+info=info[which(is.na(info$antibiotic1)),] ### remove antibiotic samples
+info=info[info$cancer==0 | is.na(info$cancer) ,] ### also no cancer, 2022/1/12 
+
+info$stage=rep(NA,nrow(info))	
+table(info$Exclude_CAD)
+table((info$SYNTAX<=10|is.na(info$SYNTAX<=10)))
+
+info$stage[which(info$Exclude_CAD==1 & (info$SYNTAX<=10|is.na(info$SYNTAX<=10)) )]="Normal"
+info$stage[which(info$Exclude_CAD==1 )]="Normal" #2021/11/16
+info$stage[which(info$SCAD==1)]="SCAD"	
+info$stage[which(info$UA==1)]="UA"	
+info$stage[which(info$MI==1)]="MI"	
+info$stage=factor(info$stage,levels=c("Normal","SCAD","UA","MI"))
+info$stage=as.numeric(info$stage)
+
+### no healthy control are need, for it is future.
+info=info[which(info$stage>1 | is.na(info$stage)),]
+## remove age<30
+table(info$age> 25 | is.na(info$age) )
+info =info[which(info$age> 25 | is.na(info$age) ),]
+dim(info)
+rownames(info)=info[,1]
+
+table(info[,c("Center","stage")])
+table(info[,c("Center")])
+table(info[,c("Center","DM")])
+
+mark_mebo = read.csv("E:/gut/model/MACE4_coxph/mgs.coxph.mace4.more.update_tax.csv",head=T,row.names=1,as.is=T)
+mark_mebo$ftax1 = paste(gsub(" *","",mark_mebo$ftax1,fixed=T),sig_symbol(mark_mebo$qvalue),sep="")	
+mark_bracken = mark_mebo 
+mark_mebo = read.csv("E:/gut/model/MACE4_coxph/tradition_factor.coxph.mace4.more.update.csv",as.is=T,head=T)
+aso = process_sig(sp=3,pref2)
+dim( aso[aso$phenotype=="LVEF" & aso$qvalue<0.1,] )
+head(aso)
+
+q1 = scatter_microbe_clinc(mp2, info,pathway=c("LVEF"),
+                           sgb=unique(aso[aso$phenotype=="LVEF" & aso$qvalue<0.1,"sgb"]),sp=3,
+                           v1= "ftax1", v2 ="tax1")
+ggsave("mgs3_heatmap_example_scatter.pdf", q1, 
+       width=4,height=8) 
+
+
+aso[which(aso$sgb=="MGS.igc0005" & aso$phenotype =="DM"),]
+asox = aso[aso$phenotype%in%varsd2,]
+sum(is.na(pmatch(asox$sgb,mark_bracken$tax,duplicates.ok=T)))
+asox$sgb[is.na(pmatch(asox$sgb,mark_bracken$tax,duplicates.ok=T))]
+asox$mgstax = mark_bracken[pmatch(asox$sgb,mark_bracken$tax,duplicates.ok=T),"ftax1"]
+write.csv(asox[!is.na(asox$mgstax),],"figure3c.v1.csv")
+
+# v1: mp2 ano
+#v2 : clinic ano
+
+# scatter plot
+scatter_microbe_clinc = function(mp2, info,pathway=c("LVEF"),
+                                 sgb=unique(aso[aso$phenotype=="LVEF" & aso$qvalue<0.1,"sgb"]),sp=3,
+                                 v1= "ftax1", v2 ="tax1"){
+  # f1 is file name of microbiome , f2 is the filename of metabolites
+  # pathway =c("LIPID_P_0033","LIPID_P_0732","LIPID_N_0582","LIPID_N_0240","LIPID_P_0031","LIPID_P_0071")
+  # sgb =c("s__Megasphaera_micronuciformis","s__Saccharomyces_cerevisiae")
+  #pathway =unique(c("MEDN221","MEDN562","MEDN704","MEDP454","MEDN821","MEDN227","MEDN720","MEDP214"))
+  # sgb =c("s__Enterococcus_faecium","s__Stenotrophomonas_maltophilia","s__Saccharomyces_cerevisiae","s__Enterococcus_avium","s__Enterococcus_casseliflavus")
+  
+  #pathway =  mark_mebo[mark_mebo[,"Pr...z.."]<0.05,"tax"]
+  # sgb = mark_bracken[mark_bracken[,"Pr...z.."]<0.05,"tax"] 
+  # mark_bracken[grepl("casse",mark_bracken[,"tax"]),]
+  # f1 ="clean\\Acvd2020.mp2.prof.rename.csv"
+  d1 = mp2
+  rownames(d1) =unlist(lapply(strsplit(rownames(d1),"|",fixed=T),function(x){x[length(x)]}))
+  
+  # f2 = "clean\\Acvd2020.Fecel-Metabolomics.prof.rename.T.csv"
+  # f2 = "clean\\Acvd2020.Fecel-Lipidomics.prof.rename.T.csv"
+  d2 = t(info)
+  # intersect
+  nm  = intersect(colnames(d1),colnames(d2))
+  length(nm)
+  d1 = d1[,pmatch(nm,colnames(d1))]
+  d2 = d2[,pmatch(nm,colnames(d2))]
+  
+  # association between mp2 and clinical
+  aso = process_sig(sp,pref2)
+  #aso$sgb1 = unlist(lapply(strsplit(aso$sgb,".",fixed=T),function(x){x[length(x)]}))
+  
+  #### prepare data for plot
+  ### long format
+  df =c()
+  for(ss in sgb){
+    for(gg in pathway){
+      bb = as.numeric(t(d1[ss,]))
+      #bb = log10(bb + min(bb[bb>0])/10 )
+      bb = log10(bb + 1e-10 )
+      df = rbind(df,data.frame(var1 = mark_mebo[which(mark_mebo$tax == gg),v2], var2 = mark_bracken[which(mark_bracken$tax == ss),v1],
+                               var3 = paste( mark_bracken[which(mark_bracken$tax == ss),v1] ,mark_mebo[which(mark_mebo$tax == gg),v2] ,sep="|"), 
+                               mebo = as.numeric(t(d2[gg,])), meta = bb,qv=aso[which(aso$phenotype ==gg & aso$sgb ==ss),"qvalue"]) )
+    }
+  }
+  
+  library(ggplot2)
+  library(MASS)
+  
+  
+  
+  
+  dat_text  = df[!duplicated(df[,c("var1","var2")]),c("var1","var2","qv")]	
+  dat_text$qv = paste("q = ",ifelse(dat_text$qv <1e-3,round(dat_text$qv,6), round(dat_text$qv,3) ))
+  
+  
+  ggplot(data =df , aes(y = meta, x = mebo)) +    
+    geom_point(pch = 21,size=1,alpha=0.5)+
+    #stat_compare_means(comparisons = my_comparisons,method="wilcox.test")+
+    facet_wrap(~var2 ,ncol=ceiling(length(sgb)/6),scale="free_y" )+
+    geom_smooth(method="lm" ,color ="#2272a9",se=T )+
+    geom_text(
+      data    = dat_text,
+      mapping = aes(x = -Inf, y = -Inf, label = qv),
+      hjust   = -0.1,
+      vjust   = -1
+    )+
+    xlab("")+
+    ylab("log10(mp2 abun)")+
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          legend.title = element_blank(),
+          legend.position = "none" ,
+          strip.text.x = element_text(size = 5) )
+  
+  
+}
