@@ -1,0 +1,1126 @@
+kmdec=function(dec.num,dec.name, datain, adm.cens){
+  stopped=0
+  data.sub=datain[datain[,dec.name]==dec.num,]
+  if (sum(data.sub$out)>1){
+    avsurv=survfit(Surv(tvar,out) ~ 1, data=datain[datain[,dec.name]==dec.num,], error="g")
+    avsurv.est=ifelse(min(avsurv$time)<=adm.cens,avsurv$surv[avsurv$time==max(avsurv$time[avsurv$time<=adm.cens])],1)
+    
+    avsurv.stderr=ifelse(min(avsurv$time)<=adm.cens,avsurv$std.err[avsurv$time==max(avsurv$time[avsurv$time<=adm.cens])],0)
+    avsurv.stderr=avsurv.stderr*avsurv.est
+    
+    avsurv.num=ifelse(min(avsurv$time)<=adm.cens,avsurv$n.risk[avsurv$time==max(avsurv$time[avsurv$time<=adm.cens])],0)
+    
+  } else {
+    return(c(0,0,0,0,stopped=-1))
+  }
+  
+  if (sum(data.sub$out)<5) stopped=1
+  c(avsurv.est, avsurv.stderr, avsurv.num, dec.num, stopped) 
+}#kmdec
+
+GND.calib = function(pred, tvar, out, cens.t, groups, adm.cens){
+  
+  tvar.t=ifelse(tvar>adm.cens, adm.cens, tvar)
+  out.t=ifelse(tvar>adm.cens, 0, out)
+  
+  datause=data.frame(pred=pred, tvar=tvar.t, out=out.t, count=1, cens.t=cens.t, dec=groups)
+  numcat=length(unique(datause$dec))
+  groups=sort(unique(datause$dec))
+  
+  kmtab=matrix(unlist(lapply(groups,kmdec,"dec",datain=datause, adm.cens)),ncol=5, byrow=TRUE)
+  
+  if (any(kmtab[,5] == -1)) stop("Stopped because at least one of the groups contains <2 events. Consider collapsing some groups.")
+  else if (any(kmtab[,5] == 1)) warning("At least one of the groups contains < 5 events. GND can become unstable.\ 
+(see Demler, Paynter, Cook 'Tests of Calibration and Goodness of Fit in the Survival Setting' DOI: 10.1002/sim.6428) \
+Consider collapsing some groups to avoid this problem.")
+  
+  hltab=data.frame(group=kmtab[,4],
+                   totaln=tapply(datause$count,datause$dec,sum),
+                   censn=tapply(datause$cens.t,datause$dec,sum),
+                   numevents=tapply(datause$out,datause$dec,sum),
+                   expected=tapply(datause$pred,datause$dec,sum),
+                   kmperc=1-kmtab[,1], 
+                   kmvar=kmtab[,2]^2, 
+                   kmnrisk=kmtab[,3],
+                   expectedperc=tapply(datause$pred,datause$dec,mean))
+  
+  hltab$kmnum=hltab$kmperc*hltab$totaln
+  hltab$GND_component=ifelse(hltab$kmvar==0, 0,(hltab$kmperc-hltab$expectedperc)^2/(hltab$kmvar))
+  
+  print(hltab[c(1,2,3,4,10,5,6,9,7,11)], digits=4)
+  
+  c(df=numcat-1, chi2gw=sum(hltab$GND_component),pvalgw=1-pchisq(sum(hltab$GND_component),numcat-1))
+}#GND.calib
+
+IDI_INF_OUT_digits <- function(x, digits = 6, scientific = FALSE) {
+  if (is.null(x$m1)) {
+    warning("IDI_INF_OUT_digits: x$m1 is NULL; nothing to print")
+    return(invisible(NULL))
+  }
+  tmp <- rbind(x$m1, x$m2, x$m3)
+  colnames(tmp) <- c("Est.", "Lower", "Upper", "p-value")
+  rownames(tmp) <- c("M1", "M2", "M3")
+  
+  fmt <- apply(tmp, c(1, 2), function(v) {
+    format(v, digits = digits, trim = TRUE, scientific = scientific)
+  })
+  print(noquote(fmt))
+  invisible(tmp)
+}
+
+#5折
+GND_result=function(mp2,info,mace=0,logx=T){  ### mace=0,deadth; mace=1,mace; mace=2; mace=3
+  ### antibiotic already removed.
+  
+  ### intersect meta and metagenomic
+  nm=intersect(colnames(mp2),rownames(info))
+  print(length(nm))
+  
+  info=info[pmatch(nm,rownames(info)),]
+  mpx=mp2[,pmatch(rownames(info),colnames(mp2))]
+  if(logx ==T){### microbime only
+    mpx=mpx[apply(mpx,1,function(x){mean(x>0)>=0.05}),]
+  }
+  dim(mpx)
+  
+  ### coxph for  metagenomics		
+  library("survival")
+  
+  #===========================================================================
+  #  add more confounder
+  # ============================================================================
+  
+  ## BB beta???????ͼ?
+  ## ??ͨ?????ͼ?(CCB)
+  ## ???ӱ????Ƽ?(PPIs)
+  ## Ѫ?ܽ?????ת??ø???Ƽ?(ACEI)
+  ## confounders
+  #DOI: 10.1056/NEJMoa1109400
+  #traditional  cardiovascular risk factors
+  # performed Cox proportional-hazards regression analysis with adjustment for traditional 
+  # cardiovascular risk factors (age, sex, systolic blood 
+  # pressure, presence or absence of diabetes mellitus, 
+  # low-density and high-density lipoprotein cholesterol levels, triglyceride levels, and smoking status) 
+  # and for log-transformed high-sensitivity C-reactive protein levels (both alone and with myeloperoxidase), 
+  #  the log-transformed estimated glomerular filtration rate, total leukocyte count, 
+  # body-mass index, medication history, and angiographic extent of coronary artery disease
+  #clinc = data.frame( gender,lnage,lntrsbp,lntrdbp=log(info$DBP),diabet,lnhdlc,
+  #	lnldlc=log(info$LDLC*38.67),lnchol,lntrig = log(info$TRIG*38.67),smoke, lntcrp = log(info$CRP_G),
+  #	lnwbc = log(info$WBC),bmi=info$BMI,SYNTAX=log(info$SYNTAX+0.01),
+  #	info[,c("BB","CCB","PPI","ACEI","Aspirin","Clop")])
+  cder_var= c("Center","age","Sex","drinking","smoking","BB","CCB","PPI","ACEI","Aspirin","Clop",
+              "SBP","DBP","hyperT","HDLC","LDLC","TRIG","BMI")  # 52 high,23 lw for WBC, 
+  # race was categorized as white, black, Asian/Pacific Islander, American Indian/Alaska Native, multiracial, not specified, or not documented (ie, missing).
+  # LDLC and CHOL, is 0.8 correlation, just kept one, we kept LDLC.
+  cder= info[,cder_var]
+  
+  ### fill NA with median for misssing < 10%
+  for ( var in colnames(cder)[apply(cder,2,function(x){mean(is.na(x))})<0.1]){
+    cder[is.na(cder[,var]),var]=median(cder[,var],na.rm=T)
+  }
+  
+  # for missing >10%, categorized as low ,high, or not documented (ie, missing)
+  transx =function(x,low_band=4, high_band=10){
+    y=rep("miss",length(x))
+    y[which(x<=low_band)]="first"
+    y[which(x>=high_band)]="later"
+    y[which(x<high_band & x>low_band )]="cormal"
+    factor(y)
+  }
+  cder$BMI = transx(cder$BMI,11,27)
+  cder$smoking = transx(cder$smoking,-0.1,0.9)
+  cder$drinking = transx(cder$drinking,-0.1,0.9)
+  cder$SBP = transx(cder$SBP,120,140)
+  cder$DBP = transx(cder$DBP,-0.1,80)
+  
+  for(var in c("age","HDLC","LDLC","TRIG")){ # log 
+    cder[,var]= log(cder[,var])
+  }
+  jclin =cder
+  library(caret)
+  findcor = function(conf){
+    res.cor <- cor(conf)
+    res.cor[is.na(res.cor)]=0
+    res.id <- findCorrelation(res.cor, cutoff = .8, exact = FALSE)
+    if(length(res.id) != 0) {
+      conf <- conf[, -res.id]
+    } else {
+      conf <- conf
+    }
+  }
+  ### fill NA with median
+  for ( var in colnames(jclin)[apply(jclin,2,function(x){any(is.na(x))})] ){
+    
+    jclin[is.na(jclin[,var]),var]=median(jclin[,var],na.rm=T)
+  }
+  
+  #bbtmp = jclin
+  #which( apply(jclin,1,function(x){ any(is.na(x)) }) )
+  #jclin[12,]
+  jclin=model.matrix(~.,jclin)[,-1]
+  jclin = as.data.frame(jclin)
+  jclin = findcor(jclin)
+  
+  #=============== end add more condouder
+  
+  
+  
+  ## BB beta???????ͼ?
+  ## ??ͨ?????ͼ?(CCB)
+  ## ???ӱ????Ƽ?(PPIs)
+  ## Ѫ?ܽ?????ת??ø???Ƽ?(ACEI)
+  ## confounders
+  cder_var=c("Center","age","Sex","drinking","smoking","BB","CCB","PPI","ACEI","Aspirin","Clop")
+  #cder_var=c("TNT_HS","ProBNP","age","Sex","drinking","smoking")
+  
+  ##clinical data
+  lnage=log(info$age)
+  lntrsbp=log(info$SBP)
+  lnutrsbp=rep(NA,nrow(info))
+  lnchol=log(info$CHOL*38.67)
+  lnhdlc=log(info$HDLC*38.67)
+  lnwc=rep(NA,nrow(info))
+  smoke=info$smoking
+  diabet=info$hyperT
+  region=rep(0,nrow(info))
+  urban=rep(NA,nrow(info))
+  hisascvd=info$restenosis
+  age_sbp=lnage*lntrsbp
+  age_sbp_un=rep(NA,nrow(info))
+  age_smoke=lnage*smoke
+  age_asvd=lnage*hisascvd
+  gender=info$Sex
+  # china part
+  clinc=data.frame(gender,lnage,lntrsbp,lnutrsbp,lnchol,lnhdlc,lnwc,smoke,diabet,
+                   urban,hisascvd)
+  
+  #traditional  cardiovascular risk factors
+  # performed Cox proportional-hazards regression analysis with adjustment for traditional 
+  # cardiovascular risk factors (age, sex, systolic blood 
+  # pressure, presence or absence of diabetes mellitus, 
+  # low-density and high-density lipoprotein cholesterol levels, triglyceride levels, and smoking status) 
+  # and for log-transformed high-sensitivity C-reactive protein levels (both alone and with myeloperoxidase), 
+  #  the log-transformed estimated glomerular filtration rate, total leukocyte count, 
+  # body-mass index, medication history, and angiographic extent of coronary artery disease
+  #clinc = data.frame( gender,lnage,lntrsbp,lntrdbp=log(info$DBP),diabet,lnhdlc,
+  #	lnldlc=log(info$LDLC*38.67),lnchol,lntrig = log(info$TRIG*38.67),smoke, lntcrp = log(info$CRP_G),
+  #	lnwbc = log(info$WBC),bmi=info$BMI,SYNTAX=log(info$SYNTAX+0.01),
+  #	info[,c("BB","CCB","PPI","ACEI","Aspirin","Clop")])
+  
+  clinc = clinc[,apply(clinc,2,function(x){mean(is.na(x))})<0.3] ### missing >30%, impute is no mean
+  colnames(clinc)
+  ### fill NA with median
+  for ( var in colnames(clinc)){
+    clinc[is.na(clinc[,var]),var]=median(clinc[,var],na.rm=T)
+  }
+  rownames(clinc) = rownames(info)
+  head(clinc)
+  
+  sort(apply(info[,cder_var],2,function(x){ mean(is.na(x)) })) ## stat the missing 
+  cder= info[,cder_var]
+  cder = cder[,apply(cder,2,function(x){mean(is.na(x))})<0.3] ### missing >30%, impute is no mean
+  colnames(cder)
+  ### fill NA with median
+  for ( var in colnames(cder)){
+    cder[is.na(cder[,var]),var]=median(cder[,var],na.rm=T)
+  }
+  head(cder)
+  cder$age = log(cder$age)
+  
+  if(mace == 0){
+    
+    ## Death
+    exp_dat = data.frame(
+      MACE = apply(info[,c("Death","Death")], 1, function(x){
+        x = as.numeric(x)
+        if(all(is.na(x))) NA else as.numeric(sum(x, na.rm = TRUE) > 0)
+      }),
+      MACE_time_wdl = apply(info[,c("Death_time","Death_time")], 1, function(x){
+        x = as.numeric(x)
+        if(all(is.na(x))) NA else min(x, na.rm = TRUE)
+      }),
+      cder
+    )
+    
+  } else if(mace == 1){
+    
+    ## MACE4
+    exp_dat = data.frame(
+      MACE = as.numeric(info$MACE4),
+      MACE_time_wdl = as.numeric(info$MACE4_time),
+      cder
+    )
+    
+  } else if(mace == 2){
+    
+    ## MACE5
+    exp_dat = data.frame(
+      MACE = as.numeric(info$MACE5),
+      MACE_time_wdl = as.numeric(info$MACE5_time),
+      cder
+    )
+    
+  }else if(mace == 3){
+    
+    ## MACE6
+    exp_dat = data.frame(
+      MACE = as.numeric(info$MACE6),
+      MACE_time_wdl = as.numeric(info$MACE6_time),
+      cder
+    )
+    
+  }else if(mace == 4){
+    
+    ## MACE7
+    exp_dat = data.frame(
+      MACE = as.numeric(info$MACE7),
+      MACE_time_wdl = as.numeric(info$MACE7_time),
+      cder
+    )
+    
+  } else {
+    
+    stop("Unknown mace value")
+  }
+  
+  ## 特殊样本强制事件
+  exp_dat[info[,1] == "M19011317a", "MACE"] = 1
+  
+  print(table(exp_dat$MACE))
+  
+  
+  print("mean visit time:")
+  print(mean(exp_dat$MACE_time_wdl,na.rm=T))
+  
+  
+  if(logx == T){
+    tmp=data.frame(scale(log10(t(mpx)+1e-12)),exp_dat)
+    
+  }else{
+    tmp=data.frame(t(mpx),exp_dat)
+    
+  }
+  clinc_tmp = data.frame(exp_dat[,c("MACE","MACE_time_wdl")],clinc)
+  clinc_tmp = data.frame(na.omit(clinc_tmp))
+  
+  jclinc_tmp = data.frame(exp_dat[,c("MACE","MACE_time_wdl")],jclin)
+  jclinc_tmp = data.frame(na.omit(jclinc_tmp))
+  
+  
+  # important time intervel
+  adm.cens=2.5*360
+  
+  library(rms)
+  #5??5 cross-validation technique for clinical data
+  clinc_tmp$MACE_time_wdl =clinc_tmp$MACE_time_wdl*360
+  jclinc_tmp$MACE_time_wdl =jclinc_tmp$MACE_time_wdl*360
+  tt= paste("Surv(MACE_time_wdl, MACE)~",
+            paste(colnames(clinc_tmp)[!colnames(clinc_tmp)%in%c("MACE_time_wdl","MACE")],collapse="+"),
+            collapse="")
+  f <- cph(as.formula(tt) , x=TRUE, y=TRUE,surv=TRUE,data=clinc_tmp,time.inc=adm.cens)
+  
+  tt1= paste("Surv(MACE_time_wdl, MACE)~",
+             paste(colnames(jclinc_tmp)[!colnames(jclinc_tmp)%in%c("MACE_time_wdl","MACE")],collapse="+"),
+             collapse="")
+  jf <- cph(as.formula(tt1) , x=TRUE, y=TRUE,surv=TRUE,data=jclinc_tmp,time.inc=adm.cens)
+  
+  
+  
+  library(rms)
+  repeated.vals <- function(fit, method, B, r) {
+    z <- 0
+    r <- max(r, 1)
+    out = list()
+    for(i in 1:r) {
+      vxx =validate(fit,method=method,B=B)[c("Dxy",
+                                             "R2","Slope","D","U","Q","g"),]
+      z <- z + vxx
+      out[[i]]=vxx
+    }
+    #z/r
+    
+    out1 = apply(matrix(unlist(lapply(out,function(x){
+      x["Dxy",]
+    }) ),nrow=r, ncol=6,byrow=T),2,function(y){c(mean(y),sd(y),quantile(y,c(0.05,0.5,0.95))) })
+    out2 = out1[,3]
+    names(out2)=c("Mean","Sd","5th","median","95th")
+    list(z/r,C_statistic = out2/2+0.5)
+  }
+  print("5??5 cross-validation technique for clinic")
+  print(repeated.vals(f, "cross", 5, 5))
+  print(" terms with value of P<0.05 in clinic? ")
+  print(f)
+  
+  print("5??5 cross-validation technique for more clinic")
+  print(repeated.vals(jf, "cross", 5, 5))
+  print(" terms with value of P<0.05 in clinic? ")
+  print(jf)
+  
+  #cal <- calibrate(f, u=900, m=50, B=200)
+  #plot(cal)
+  #pa <- 'polspline' %in% row.names(installed.packages()) 
+  cal <- calibrate(f, u=adm.cens, cmethod='KM', m=50, B=200) # usually B=200 or 300
+  #plot(cal, add=pa)
+  plot(cal[,"mean.predicted"],cal[,"KM.corrected"],main="clinic")
+  
+  
+  ## modified Nam-D??Agostino test.
+  
+  library(Hmisc)
+  library(survival)
+  
+  #read the data
+  d<-tmp
+  d$futime = d$MACE_time_wdl*360
+  d$death =d$MACE
+  max(d$MACE_time_wdl,na.rm=T)
+  #we decided we are interested in calibration at 2.5*360=900 days,
+  #so censor after 900
+  
+  d$fu.time <- pmin(d$futime, adm.cens)
+  d$status <- ifelse(as.numeric(adm.cens < d$futime), 0, d$death)
+  nonadm.cens=ifelse(d$fu.time<adm.cens & d$status==0,1,0)
+  mean(d$status,na.rm=T)
+  
+  d = d[,!colnames(d)%in%unique(c(c("MACE","MACE_time_wdl","futime","death"),cder_var))]
+  d = data.frame(na.omit(d))
+  #calculate predicted probability at pre-specified time (adm.cens)
+  survcox_d<-coxph(data=d, Surv(fu.time, status)~.)
+  summary(survcox_d)
+  
+  #10??10 cross-validation technique
+  d1 =d
+  colnames(d1)=gsub("\\.","_",colnames(d1))
+  #colnames(d1)=ifelse(grepl("p__",colnames(d1)),
+  #			unlist(lapply(strsplit(colnames(d1),".",fixed=T),function(x){x[length(x)]})),
+  #			colnames(d1))
+  # cph do not reconigze the ~. 
+  tt= paste("Surv(fu_time, status)~",
+            paste(colnames(d1)[!colnames(d1)%in%unique(c(cder_var,c("fu_time","status")))],collapse="+"),
+            collapse="")
+  f <- cph(as.formula(tt) , x=TRUE, y=TRUE,surv=TRUE,data=d1,time.inc=adm.cens)
+  
+  library(glmnet)
+  set.seed(2021)
+  y=as.matrix(d1[,c("fu_time","status")])
+  colnames(y)=c("time","status")
+  y[,"time"]=y[,"time"]+1
+  x= as.matrix(d1[,!colnames(d1)%in%unique(c(cder_var,c("fu_time","status")))])
+  cvfit <- cv.glmnet(x, y, family = "cox", type.measure = "C")
+  spar_var = colnames(x)[as.numeric(coef(cvfit, s = cvfit$lambda.1se))!=0]
+  spar_var1 =data.frame( colnames(x)[as.numeric(coef(cvfit, s = cvfit$lambda.1se))!=0],
+                         as.numeric(coef(cvfit, s = cvfit$lambda.1se))[as.numeric(coef(cvfit, s = cvfit$lambda.1se))!=0 ]
+  )
+  
+  tt= paste("Surv(fu_time, status)~",
+            paste(spar_var,collapse="+"),
+            collapse="")
+  f <- cph(as.formula(tt) , x=TRUE, y=TRUE,surv=TRUE,data=d1,time.inc=adm.cens)
+  survcox_d<-coxph(data=d[,c(pmatch(spar_var, gsub("\\.","_",colnames(d))),
+                             pmatch(c("fu.time", "status"),colnames(d)))], Surv(fu.time, status)~.)
+  out_pred = data.frame( survcox_d$linear.predictors,d[,c("fu.time", "status")])
+  
+  boxplot(survcox_d$linear.predictors~d[,c("status")] )
+  #The final models should 
+  # include any interaction terms with value of P<0.01 or P=0.01 
+  # to 0.05 and the continuous net reclassification improvement 
+  # for nonevents ??15% or statistically significant IDI
+  #IDI 
+  #library(survIDINRI)
+  ## baseline is the clinical model 
+  #indata0 = as.matrix(data.frame(d1[,1]))
+  #colnames(indata0)=colnames(d1)[1]
+  #out=c()
+  #for( jb in 2:(ncol(d1)-2)){
+  #	indata1 = as.matrix(data.frame(d1[,c(1,jb)]))
+  #	 x<-IDI.INF(clinc_tmp[,c("MACE_time_wdl", "MACE")], indata0, indata1, adm.cens, npert=100) ;
+  #	#--- results ---
+  #	res = IDI.INF.OUT(x) ;
+  #	#--- Graphical presentaion of the estimates ---
+  #	# IDI.INF.GRAPH(x) ;
+  #	# cph
+  #	out= rbind(out, data.frame(res, var = colnames(d1)[jb]))
+  #}
+  # idi_var = unique(out[out[,"p.value"]<=0.1 | out[,"Est."]>=0.06,"var"])
+  
+  library(rms)
+  repeated.vals2 <- function(fit, method, B, r) {
+    z <- 0
+    r <- max(r, 1)
+    for(i in 1:r) {
+      z <- z + validate(fit,method=method,B=B)[c("Dxy",
+                                                 "R2","Slope","D","U","Q","g"),]
+    }
+    z/r
+  }
+  print("5??5 cross-validation technique for microbiome")
+  print(repeated.vals(f, "cross", 5, 5))
+  #Dxy are equal to 2 * (C ? 0.5) where C is the C-index
+  #Dxy/2+0.5
+  
+  #cal <- calibrate(f, u=900, m=50, B=200)
+  #plot(cal)
+  pa <- 'polspline' %in% row.names(installed.packages()) 
+  cal <- calibrate(f, u=adm.cens, cmethod='KM', m=50, B=200) # usually B=200 or 300
+  #plot(cal)
+  #plot(cal, add=pa)
+  #x11()
+  #library(ggplot2)
+  #df2 = data.frame(x=cal[,"mean.predicted"],y=cal[,"KM.corrected"],sd=cal[,"std.err"])
+  #p<- ggplot(df2, aes(x=x, y=y)) + 
+  #	 geom_point(pch=19)+
+  #geom_errorbar(aes(ymin=y-sd, ymax=y+sd), width=.2,
+  #	 position=position_dodge(0.05))
+  
+  plot(cal[,"mean.predicted"],cal[,"KM.corrected"],main="microbiome",
+       xlab="Predicted suivival Probability for 2.5-year",pch=19,
+       ylab="Observed suivival Proportion for 2.5-year")
+  #abline(a=0,b=1,type=2)
+  ### too many variables , need to lower , use IDI, NRI
+  pmatch(rownames(d),rownames(clinc))
+  
+  #The final models should 
+  # include any interaction terms with value of P<0.01 or P=0.01 
+  # to 0.05 and the continuous net reclassification improvement 
+  # for nonevents ??15% or statistically significant IDI
+  #IDI 
+  #library(survIDINRI)
+  ## baseline is the clinical model 
+  #dim(clinc_tmp)
+  #dim(d1)
+  #indata0 = as.matrix(clinc_tmp[,-c(1,2)])
+  #out=c()
+  #for( jb in 1:(ncol(d1)-2)){
+  #	indata1 = as.matrix(data.frame(clinc_tmp[,-c(1,2)],target=d1[,jb]))
+  #	 x<-IDI.INF(clinc_tmp[,c("MACE_time_wdl", "MACE")], indata0, indata1, adm.cens, npert=100) ;
+  #	#--- results ---
+  #	res = IDI.INF.OUT(x) ;
+  #	#--- Graphical presentaion of the estimates ---
+  #  IDI.INF.GRAPH(x) ;
+  #	# cph
+  #	out= rbind(out, data.frame(res, var = colnames(d1)[jb]))
+  #}
+  # idi_var = unique(out[out[,"p.value"]<=0.1 | out[,"Est."]>=0.06,"var"])
+  
+  ### 10??10 cross-validation technique for microbiome + clinic
+  #d1 =data.frame(d,clinc[pmatch(rownames(d),rownames(clinc)),]) # all
+  d1 =data.frame(d[,gsub("\\.","_",colnames(d))%in%c(spar_var,"fu_time","status")],clinc[pmatch(rownames(d),rownames(clinc)),]) # select
+  d1= na.omit(d1)
+  colnames(d1)=gsub("\\.","_",colnames(d1))
+  #colnames(d1)=ifelse(grepl("p__",colnames(d1)),
+  #			unlist(lapply(strsplit(colnames(d1),".",fixed=T),function(x){x[length(x)]})),
+  #			colnames(d1))
+  # cph do not reconigze the ~. 
+  tt= paste("Surv(fu_time, status)~",
+            paste(colnames(d1)[!colnames(d1)%in%unique(c(cder_var,c("fu_time","status")))],collapse="+"),
+            collapse="")
+  print("variable final included:")
+  print(colnames(d1)[!colnames(d1)%in%unique(c(cder_var,c("fu_time","status")))])
+  f <- cph(as.formula(tt) , x=TRUE, y=TRUE,surv=TRUE,data=d1,time.inc=adm.cens)
+  
+  
+  library(rms)
+  repeated.vals2 <- function(fit, method, B, r) {
+    z <- 0
+    r <- max(r, 1)
+    for(i in 1:r) {
+      z <- z + validate(fit,method=method,B=B)[c("Dxy",
+                                                 "R2","Slope","D","U","Q","g"),]
+    }
+    z/r
+  }
+  print("5??5 cross-validation technique for microbiome + clinic")
+  print(repeated.vals(f, "cross", 5, 5))
+  #Dxy are equal to 2 * (C ? 0.5) where C is the C-index
+  #Dxy/2+0.5
+  
+  # ==============================================================================
+  # 计算 IDI 和 NRI: M3 vs M2 以及 M4 vs M2
+  # ==============================================================================
+  library(survIDINRI)
+  
+  print("=========================================================")
+  print(paste("Calculating IDI & NRI at time =", adm.cens, "days..."))
+  
+  # 1. 严格对齐样本 (提取 d1 和 jclinc_tmp 中共有的样本 ID)
+  common_ids <- intersect(rownames(d1), rownames(jclinc_tmp))
+  
+  if(length(common_ids) < 10) {
+    print("Warning: Too few common samples between microbiome and clinical datasets to calculate IDI/NRI.")
+  } else {
+    # 2. 构建生存时间与状态矩阵 (indata)
+    indata_mat <- as.matrix(d1[common_ids, c("fu_time", "status")])
+    
+    # 3. 提取各个模型的协变量矩阵 (Covariates)
+    
+    # --- 模型 2 (More Clinic): 来自 jclinc_tmp ---
+    m2_vars <- colnames(jclinc_tmp)[!colnames(jclinc_tmp) %in% c("MACE_time_wdl", "MACE")]
+    covs_m2 <- as.matrix(jclinc_tmp[common_ids, m2_vars])
+    
+    # --- 模型 3 (Microbiome): 来自 d1 中的 spar_var ---
+    if(length(spar_var) > 0) {
+      covs_m3 <- as.matrix(d1[common_ids, spar_var])
+    } else {
+      # 如果 Lasso 没有选出变量，给一个 Dummy 变量防止报错
+      covs_m3 <- as.matrix(rep(1, length(common_ids))) 
+    }
+    
+    # --- 模型 4 (Microbiome + Clinic): 来自 d1 中用于拟合的变量 ---
+    m4_vars <- colnames(d1)[!colnames(d1) %in% unique(c(cder_var, "fu_time", "status"))]
+    covs_m4 <- as.matrix(d1[common_ids, m4_vars])
+    
+    # 4. 运行 IDI.INF 进行重分类改善度检验
+    
+    # 【比较 A：模型 3 (纯微生物) vs 模型 2 (全临床)】
+    cat("\n[1] NRI/IDI: Model 3 (Microbiome) vs Model 2 (More Clinic)\n")
+    tryCatch({
+      idi_m3_m2 <- IDI.INF(indata_mat, covs_m2, covs_m3, t0 = adm.cens, npert = 200)
+      print(as.data.frame(IDI.INF.OUT(idi_m3_m2)))
+      print(IDI_INF_OUT_digits(idi_m3_m2, digits = 6))
+    }, error = function(e){ cat("Error in survIDINRI for M3 vs M2:\n"); print(e) })
+    
+    # 【比较 B：模型 4 (微生物+基础临床) vs 模型 2 (全临床)】
+    cat("\n[2] NRI/IDI: Model 4 (Microbiome+Clinic) vs Model 2 (More Clinic)\n")
+    tryCatch({
+      idi_m4_m2 <- IDI.INF(indata_mat, covs_m2, covs_m4, t0 = adm.cens, npert = 200)
+      print(as.data.frame(IDI.INF.OUT(idi_m4_m2)))
+      print(IDI_INF_OUT_digits(idi_m4_m2, digits = 6))
+    }, error = function(e){ cat("Error in survIDINRI for M4 vs M2:\n"); print(e) })
+  }
+  print("=========================================================")
+  
+  # NEW: 5-fold CV + timeROC + survIDINRI for 4 models
+  library(timeROC)
+  library(survIDINRI)
+  
+  c_names <- intersect(rownames(d1), intersect(rownames(clinc_tmp), rownames(jclinc_tmp)))
+  
+  cv_results <- list()
+  set.seed(2023)
+  folds <- sample(rep(1:5, length.out = length(c_names)))
+  
+  for(k in 1:5) {
+    c_test <- c_names[folds == k]
+    c_train <- c_names[folds != k]
+    
+    if(length(c_train) > 0 && length(c_test) > 0) {
+      # M1: clinic
+      train_m1 <- clinc_tmp[c_train, ]
+      test_m1  <- clinc_tmp[c_test, ]
+      tt_m1 <- paste("Surv(MACE_time_wdl, MACE)~", paste(colnames(train_m1)[!colnames(train_m1)%in%c("MACE_time_wdl","MACE","Center")],collapse="+"), collapse="")
+      f_m1 <- coxph(as.formula(tt_m1), data=train_m1)
+      p_m1 <- predict(f_m1, newdata=test_m1, type="lp")
+      
+      # M2: more clinic
+      train_m2 <- jclinc_tmp[c_train, ]
+      test_m2  <- jclinc_tmp[c_test, ]
+      tt_m2 <- paste("Surv(MACE_time_wdl, MACE)~", paste(colnames(train_m2)[!colnames(train_m2)%in%c("MACE_time_wdl","MACE","Center")],collapse="+"), collapse="")
+      f_m2 <- coxph(as.formula(tt_m2), data=train_m2)
+      p_m2 <- predict(f_m2, newdata=test_m2, type="lp")
+      
+      # M3: microbiome
+      train_m3 <- subset(d, rownames(d) %in% c_train)
+      test_m3  <- subset(d, rownames(d) %in% c_test)
+      colnames(train_m3) <- gsub("\\.", "_", colnames(train_m3))
+      colnames(test_m3) <- gsub("\\.", "_", colnames(test_m3))
+      tt_m3 <- paste("Surv(fu_time, status)~", paste(spar_var,collapse="+"), collapse="")
+      if(length(spar_var) == 0) tt_m3 <- "Surv(fu_time, status)~1"
+      f_m3 <- coxph(as.formula(tt_m3), data=train_m3)
+      p_m3 <- predict(f_m3, newdata=test_m3, type="lp")
+      
+      # M4: microbiome + clinic
+      train_m4 <- d1[c_train, ]
+      test_m4  <- d1[c_test, ]
+      tt_m4 <- paste("Surv(fu_time, status)~", paste(colnames(train_m4)[!colnames(train_m4)%in%c("fu_time","status","Center")],collapse="+"), collapse="")
+      f_m4 <- coxph(as.formula(tt_m4), data=train_m4)
+      p_m4 <- predict(f_m4, newdata=test_m4, type="lp")
+      
+      cv_results[[k]] <- data.frame(
+        RowNames = c_test, time = test_m4$fu_time, status = test_m4$status, 
+        p_m1 = as.numeric(p_m1), p_m2 = as.numeric(p_m2), p_m3 = as.numeric(p_m3), p_m4 = as.numeric(p_m4)
+      )
+    }
+  }
+  cv_preds <- do.call(rbind, cv_results)
+  if(!is.null(cv_preds) && nrow(cv_preds) > 0) {
+    times_eval <- c(1*360, 2*360, 2.45*360)
+    roc_m1 <- timeROC(T=cv_preds$time, delta=cv_preds$status, marker=cv_preds$p_m1, cause=1, weighting="marginal", times=times_eval, iid=TRUE)
+    roc_m2 <- timeROC(T=cv_preds$time, delta=cv_preds$status, marker=cv_preds$p_m2, cause=1, weighting="marginal", times=times_eval, iid=TRUE)
+    roc_m3 <- timeROC(T=cv_preds$time, delta=cv_preds$status, marker=cv_preds$p_m3, cause=1, weighting="marginal", times=times_eval, iid=TRUE)
+    roc_m4 <- timeROC(T=cv_preds$time, delta=cv_preds$status, marker=cv_preds$p_m4, cause=1, weighting="marginal", times=times_eval, iid=TRUE)
+    
+    print("--- 5-fold CV Results ---")
+    
+    # 采用 Bootstrap 方法 (CV-aware) 计算 C-statistic 和 AUC 的 95% CI
+    n_boot <- 1000
+    boot_c <- matrix(NA, nrow=n_boot, ncol=4)
+    #boot_auc <- matrix(NA, nrow=n_boot, ncol=4)
+    #修改
+    boot_auc <- array(
+      NA,
+      dim = c(n_boot, 4, length(times_eval))
+    )
+    # 这里设置随机数种子以便结果可复现
+    set.seed(123) 
+    for(b in 1:n_boot) {
+      # 对 Pooled 交叉验证结果进行有放回的 Bootstrap 重抽样
+      idx <- sample(1:nrow(cv_preds), replace=TRUE)
+      boot_dat <- cv_preds[idx, ]
+      
+      tryCatch({
+        # 计算 Bootstrap 分布的 C-statistic
+        boot_c[b, 1] <- Hmisc::rcorr.cens(-boot_dat$p_m1, survival::Surv(boot_dat$time, boot_dat$status))["C Index"]
+        boot_c[b, 2] <- Hmisc::rcorr.cens(-boot_dat$p_m2, survival::Surv(boot_dat$time, boot_dat$status))["C Index"]
+        boot_c[b, 3] <- Hmisc::rcorr.cens(-boot_dat$p_m3, survival::Surv(boot_dat$time, boot_dat$status))["C Index"]
+        boot_c[b, 4] <- Hmisc::rcorr.cens(-boot_dat$p_m4, survival::Surv(boot_dat$time, boot_dat$status))["C Index"]
+        
+        # 计算 Bootstrap 分布的 timeROC (此处提取 2.45 年/2.5 年，即 times_eval 中第3个时间点)
+        br1 <- timeROC::timeROC(T=boot_dat$time, delta=boot_dat$status, marker=boot_dat$p_m1, cause=1, weighting="marginal", times=times_eval, iid=FALSE)
+        br2 <- timeROC::timeROC(T=boot_dat$time, delta=boot_dat$status, marker=boot_dat$p_m2, cause=1, weighting="marginal", times=times_eval, iid=FALSE)
+        br3 <- timeROC::timeROC(T=boot_dat$time, delta=boot_dat$status, marker=boot_dat$p_m3, cause=1, weighting="marginal", times=times_eval, iid=FALSE)
+        br4 <- timeROC::timeROC(T=boot_dat$time, delta=boot_dat$status, marker=boot_dat$p_m4, cause=1, weighting="marginal", times=times_eval, iid=FALSE)
+        
+        # times_eval 有 3 个元素，此处提取第 3 个时间点结果，如果维度不同可以将3改为 length(br1$AUC)
+        #修改
+        #boot_auc[b, 1] <- br1$AUC[3]
+        #boot_auc[b, 2] <- br2$AUC[3]
+        #boot_auc[b, 3] <- br3$AUC[3]
+        #boot_auc[b, 4] <- br4$AUC[3]
+        boot_auc[b, 1, ] <- br1$AUC
+        boot_auc[b, 2, ] <- br2$AUC
+        boot_auc[b, 3, ] <- br3$AUC
+        boot_auc[b, 4, ] <- br4$AUC
+      }, error = function(e){})
+    }
+    
+    # 输出带有 95% 置信区间的 C-statistic
+    c_orig <- c(
+      tryCatch(Hmisc::rcorr.cens(-cv_preds$p_m1, survival::Surv(cv_preds$time, cv_preds$status))["C Index"], error=function(e) NA),
+      tryCatch(Hmisc::rcorr.cens(-cv_preds$p_m2, survival::Surv(cv_preds$time, cv_preds$status))["C Index"], error=function(e) NA),
+      tryCatch(Hmisc::rcorr.cens(-cv_preds$p_m3, survival::Surv(cv_preds$time, cv_preds$status))["C Index"], error=function(e) NA),
+      tryCatch(Hmisc::rcorr.cens(-cv_preds$p_m4, survival::Surv(cv_preds$time, cv_preds$status))["C Index"], error=function(e) NA)
+    )
+    
+    
+    # 输出带有 95% 置信区间的 Time-dependent AUC (2.5 年)
+    #print(sprintf("AUC (2.5yr) for M1 (Clinic): %.4f (95%% CI: %.4f - %.4f)", roc_m1$AUC[3], quantile(boot_auc[,1], 0.025, na.rm=T), quantile(boot_auc[,1], 0.975, na.rm=T)))
+    # print(sprintf("AUC (2.5yr) for M2 (More Clinic): %.4f (95%% CI: %.4f - %.4f)", roc_m2$AUC[3], quantile(boot_auc[,2], 0.025, na.rm=T), quantile(boot_auc[,2], 0.975, na.rm=T)))
+    #print(sprintf("AUC (2.5yr) for M3 (Microbiome): %.4f (95%% CI: %.4f - %.4f)", roc_m3$AUC[3], quantile(boot_auc[,3], 0.025, na.rm=T), quantile(boot_auc[,3], 0.975, na.rm=T)))
+    #print(sprintf("AUC (2.5yr) for M4 (Microb+Clinic): %.4f (95%% CI: %.4f - %.4f)", roc_m4$AUC[3], quantile(boot_auc[,4], 0.025, na.rm=T), quantile(boot_auc[,4], 0.975, na.rm=T)))
+    model_names <- c(
+      "M1 (Clinic)",
+      "M2 (More Clinic)",
+      "M3 (Microbiome)",
+      "M4 (Microb+Clinic)"
+    )
+    
+    roc_list <- list(roc_m1, roc_m2, roc_m3, roc_m4)
+    
+    for(m in 1:4){
+      
+      cat("\n============================\n")
+      cat(model_names[m], "\n")
+      cat("============================\n")
+      
+      for(ti in 1:length(times_eval)){
+        
+        auc_now <- roc_list[[m]]$AUC[ti]
+        
+        ci_low <- quantile(
+          boot_auc[,m,ti],
+          0.025,
+          na.rm=TRUE
+        )
+        
+        ci_high <- quantile(
+          boot_auc[,m,ti],
+          0.975,
+          na.rm=TRUE
+        )
+        
+        cat(sprintf(
+          "AUC at %.2f years: %.4f (95%% CI %.4f - %.4f)\n",
+          times_eval[ti]/360,
+          auc_now,
+          ci_low,
+          ci_high
+        ))
+      }
+    }
+    eval_data <- cv_preds[, c("time", "status")]
+    eval_data$time <- pmax(eval_data$time, 1) # Prevent exact zero times
+  }
+  
+  # ============================
+  # Time-split validation (rxDate): first 60% train, last 40% test
+  # ============================
+  .calc_robust_metrics <- function(lp, time, status, times_eval) {
+    # 1. 检查方向 (使用 Spearman 相关性)
+    rho <- cor(lp, status, method = "spearman")
+    is_inverted <- rho < 0
+    # 2. 如果是反向的，对 lp 取反
+    adj_lp <- if(is_inverted) -lp else lp
+    # 3. 计算 C-index (Hmisc 需要传入负的 lp 来代表高风险)
+    c_idx <- as.numeric(Hmisc::rcorr.cens(-adj_lp, survival::Surv(time, status))["C Index"])
+    # 4. 计算 AUC
+    roc <- timeROC::timeROC(T = time, delta = status, marker = adj_lp, cause = 1, weighting = "marginal", times = times_eval, iid = FALSE)
+    list(c_index = c_idx, auc = roc$AUC, inverted = is_inverted)
+  }
+  
+  .parse_rx_date <- function(x) {
+    if (inherits(x, "Date")) return(x)
+    if (inherits(x, "POSIXt")) return(as.Date(x))
+    
+    x_chr <- trimws(as.character(x))
+    x_chr[x_chr %in% c("", "NA", "NaN", "NULL")] <- NA
+    
+    out <- as.Date(rep(NA_character_, length(x_chr)))
+    names(out) <- names(x_chr)
+    
+    # Handle Excel-like serial dates (days since 1899-12-30)
+    is_num <- !is.na(x_chr) & grepl("^[0-9]+(\\.[0-9]+)?$", x_chr)
+    if (any(is_num)) {
+      x_num <- suppressWarnings(as.numeric(x_chr[is_num]))
+      is_excel <- !is.na(x_num) & x_num > 10000 & x_num < 60000
+      if (any(is_excel)) {
+        out[which(is_num)[is_excel]] <- as.Date(x_num[is_excel], origin = "1899-12-30")
+      }
+    }
+    
+    # Try common explicit formats (including timestamps)
+    fmts <- c(
+      "%Y/%m/%d",
+      "%Y-%m-%d",
+      "%Y.%m.%d",
+      "%Y/%m/%d %H:%M:%S",
+      "%Y-%m-%d %H:%M:%S",
+      "%Y/%m/%d %H:%M",
+      "%Y-%m-%d %H:%M",
+      "%Y%m%d"
+    )
+    for (fmt in fmts) {
+      idx <- which(is.na(out) & !is.na(x_chr))
+      if (length(idx) == 0) break
+      out[idx] <- as.Date(x_chr[idx], format = fmt)
+    }
+    
+    out
+  }
+  
+  cat("\n--- Time-split (rxDate) validation setup ---\n")
+  cat(sprintf(
+    "c_names=%s; has_rxDate=%s\n",
+    if (is.null(c_names)) "NULL" else as.character(length(c_names)),
+    as.character("rxDate" %in% colnames(info))
+  ))
+  
+  if (is.null(c_names) || length(c_names) == 0) {
+    cat("Time-split skipped: c_names is empty\n")
+  } else if (!("rxDate" %in% colnames(info))) {
+    cat("Time-split skipped: info does not contain column rxDate\n")
+  } else {
+    c_ids <- intersect(c_names, rownames(info))
+    if (length(c_ids) == 0) {
+      cat("Time-split skipped: no overlap between c_names and rownames(info)\n")
+    } else {
+      if (length(c_ids) < length(c_names)) {
+        cat(sprintf("Note: %d IDs in c_names not found in info and will be dropped\n", length(c_names) - length(c_ids)))
+      }
+      
+      rx <- .parse_rx_date(info[c_ids, "rxDate", drop = TRUE])
+      keep <- !is.na(rx)
+      cat(sprintf("non-missing rxDate among common IDs: %d\n", sum(keep)))
+      
+      if (sum(keep) < 20) {
+        cat("Time-split skipped: too few non-missing rxDate in common samples (<20)\n")
+      } else {
+        rx_keep <- rx[keep]
+        ord <- order(rx_keep)
+        ids_ordered <- names(rx_keep)
+        if (is.null(ids_ordered)) {
+          ids_ordered <- c_ids[keep]
+        }
+        ids_ordered <- ids_ordered[ord]
+        n_all <- length(ids_ordered)
+        n_train <- floor(n_all * 0.60)
+        if (n_train < 10 || (n_all - n_train) < 10) {
+          cat(sprintf("Time-split skipped: train/test too small after split (n_all=%d, n_train=%d)\n", n_all, n_train))
+        } else {
+          ts_train <- ids_ordered[1:n_train]
+          ts_test <- ids_ordered[(n_train + 1):n_all]
+          
+          # Fit on train, evaluate on test
+          train_m1 <- clinc_tmp[ts_train, ]
+          test_m1  <- clinc_tmp[ts_test, ]
+          tt_m1 <- paste("Surv(MACE_time_wdl, MACE)~", paste(colnames(train_m1)[!colnames(train_m1) %in% c("MACE_time_wdl", "MACE", "Center")], collapse = "+"), collapse = "")
+          f_m1_ts <- coxph(as.formula(tt_m1), data = train_m1)
+          p_m1_ts <- as.numeric(predict(f_m1_ts, newdata = test_m1, type = "lp"))
+          
+          train_m2 <- jclinc_tmp[ts_train, ]
+          test_m2  <- jclinc_tmp[ts_test, ]
+          tt_m2 <- paste("Surv(MACE_time_wdl, MACE)~", paste(colnames(train_m2)[!colnames(train_m2) %in% c("MACE_time_wdl", "MACE", "Center")], collapse = "+"), collapse = "")
+          f_m2_ts <- coxph(as.formula(tt_m2), data = train_m2)
+          p_m2_ts <- as.numeric(predict(f_m2_ts, newdata = test_m2, type = "lp"))
+          
+          # [修正 1]：放弃使用 subset，强制使用矩阵切片 [ts_train, ] 来确保顺序严格对齐
+          train_m3 <- d[ts_train, ]
+          test_m3  <- d[ts_test, ]
+          colnames(train_m3) <- gsub("\\.", "_", colnames(train_m3))
+          colnames(test_m3) <- gsub("\\.", "_", colnames(test_m3))
+          tt_m3 <- paste("Surv(fu_time, status)~", paste(spar_var, collapse = "+"), collapse = "")
+          if (length(spar_var) == 0) tt_m3 <- "Surv(fu_time, status)~1"
+          f_m3_ts <- coxph(as.formula(tt_m3), data = train_m3)
+          p_m3_ts <- as.numeric(predict(f_m3_ts, newdata = test_m3, type = "lp"))
+          
+          train_m4 <- d1[ts_train, ]
+          test_m4  <- d1[ts_test, ]
+          tt_m4 <- paste("Surv(fu_time, status)~", paste(colnames(train_m4)[!colnames(train_m4) %in% c("fu_time", "status", "Center")], collapse = "+"), collapse = "")
+          f_m4_ts <- coxph(as.formula(tt_m4), data = train_m4)
+          p_m4_ts <- as.numeric(predict(f_m4_ts, newdata = test_m4, type = "lp"))
+          
+          ts_time <- pmax(as.numeric(test_m4$fu_time), 1)
+          ts_status <- as.numeric(test_m4$status)
+          
+          # [修正 2]：回溯到原数据 info 中重新提取确切的日期，防止向量 names 丢失导致 Inf
+          train_dates <- as.Date(.parse_rx_date(info[ts_train, "rxDate"]))
+          test_dates  <- as.Date(.parse_rx_date(info[ts_test, "rxDate"]))
+          
+          cat("\n--- Time-split (rxDate) validation: train 60% / test 40% ---\n")
+          cat(sprintf("N train = %d, N test = %d\n", length(ts_train), length(ts_test)))
+          cat(sprintf("Train date range: %s ~ %s\n", as.character(min(train_dates, na.rm = TRUE)), as.character(max(train_dates, na.rm = TRUE))))
+          cat(sprintf("Test  date range: %s ~ %s\n", as.character(min(test_dates, na.rm = TRUE)), as.character(max(test_dates, na.rm = TRUE))))
+          
+          # --- 在时间分割验证的循环内部使用 ---
+          # (假设已经有了 p_m1_ts, p_m2_ts, p_m3_ts, p_m4_ts 和 ts_time, ts_status)
+          lp_list <- list(M1=p_m1_ts, M2=p_m2_ts, M3=p_m3_ts, M4=p_m4_ts)
+          eval_times <- c(1 * 360, 2 * 360, (2.5 - 1/365) * 360)
+          cat("\n--- Robust Validation Results  ---\n")
+          for (m_name in names(lp_list)) {
+            res <- .calc_robust_metrics(lp_list[[m_name]], ts_time, ts_status, eval_times)
+            cat(sprintf("\nModel: %s %s\n", m_name, ifelse(res$inverted, "[Direction Inverted & Corrected]", "")))
+            cat(sprintf("C-index: %.4f\n", res$c_index))
+            for (ti in seq_along(eval_times)) {
+              cat(sprintf("AUC at %.2f years: %.4f\n", eval_times[ti]/360, res$auc[ti]))
+            }
+          }
+        }
+      }
+    }
+  }
+  pa <- 'polspline' %in% row.names(installed.packages()) 
+  cal <- calibrate(f, u=adm.cens, cmethod='KM', m=50, B=200) # usually B=200 or 300
+  #plot(cal, add=pa)
+  x11()
+  plot(1-cal[,"mean.predicted"],1-cal[,"KM.corrected"],
+       main="clinc+microbiome",pch=19,
+       xlab="Predicted Probability for 2.5-year MACE",
+       ylab="Observed Proportion for 2.5-year MACE")
+  abline(a=0,b=1,type=2)
+  
+  survfit_d=survfit(survcox_d, newdata=d, se.fit=FALSE)
+  survpr4K=survfit_d$surv[nrow(survfit_d$surv),]
+  estsurv=survpr4K
+  estinc=1-survpr4K
+  
+  #split into deciles
+  d$dec=as.numeric(cut2(estinc, g=5))
+  table(d$dec)
+  #check that there are 5 or more events in each group
+  #if not then collapse groups
+  xx = table(d$dec, d$status)
+  
+  if( any(xx[,2] <5) ){
+    outj = list("GND.result",out_pred,spar_var1 )
+  }else{
+    #calculate the GND test
+    GND.result=GND.calib(pred=estinc, tvar=d$fu.time, out=d$status, 
+                         cens.t=adm.cens, groups=d$dec, adm.cens=adm.cens)
+    
+    outj = list(GND.result,out_pred,spar_var1 )
+  }
+  
+}
+
+
+mark_pick =function(mp2, mark,corcut=0.5,pcut=0.1){
+  #print(mark[mark[,"Pr...z.."]<0.05,"tax"])
+  # get marker profile, we'd better not kept variable more than 35. 
+  newn = unlist(lapply(strsplit(rownames(mp2),"|",fixed=T),function(x){x[length(x)]}))
+  #test =mark[mark[,"Pr...z.."]<0.05,"tax"] ##2024/04/10
+  test =mark[mark[,"Pr...z.."]<pcut,"tax"]
+  #test = test[grepl("g__|s__|t__",test)]
+  mark_p = mp2[pmatch(test,newn),]
+  
+  
+  # remove colinear
+  library(caret)
+  cor1=cor(t(mark_p),method="spearman")
+  cor2=cor1
+  rownames(cor2)=colnames(cor2)=test
+  #corcut =0.5 # for microbiome
+  #corcut =0.8 # for metabolites
+  id=findCorrelation(cor2,corcut)
+  colnames(cor2)[id]
+  round(cor2[id,apply(cor2[id,],2,function(x){any(x>corcut)})],2)
+  library(pheatmap)
+  cor2 =cor2[id,apply(cor2[id,],2,function(x){any(x>corcut)})]
+  cor2[abs(cor2)>corcut]=1
+  pheatmap(round(cor2,2))
+  
+  # we kept the most significant one
+  if(length(id)>0){
+    kep =rownames(cor1)[-id]
+    dropx = rownames(cor1)[id]
+    for(xx in id){
+      jj = mark[pmatch(colnames(cor1)[cor1[xx,]>corcut],mark$tax),]
+      kep = kep[!kep%in%jj$tax] ## clean this group
+      kep= c(kep,jj[which.min(jj[,"qvalue"]),"tax"]) ## add the need
+    }
+    kep = unique(kep)
+    mark[pmatch(kep,mark$tax),]
+    
+  }
+  mark_p1 = mark_p[kep,]
+  dim(mark_p1)
+  
+  #if(nrow(mark_p1)>35){ # no more than 35 feactures
+  #	mark_p1 = mark_p1[rownames(mark_p1)[order(mark[pmatch(rownames(mark_p1),mark$tax),"Pr...z.."])[1:35]],]
+  #}
+  print(rownames(mark_p1))
+  mark_p1
+}
+
+#读入info
+library(openxlsx)
+setwd("E:/gut/model")
+info = read.xlsx("2021-2-3 MWAS_251216.xlsx")
+covar <- read.xlsx("covar.xlsx")
+info = merge(info,covar,by="Sample_ID")
+row.names(info) <- info[,1]
+colnames(info)=gsub("\\.$","",gsub("^X.","",colnames(info)))
+dim(info)
+head(info)
+info=info[which(is.na(info$antibiotic1)),] ### remove antibiotic samples
+info=info[info$cancer==0 | is.na(info$cancer) ,] ### also no cancer, 2022/1/12 
+
+info$stage=rep(NA,nrow(info))	
+table(info$Exclude_CAD)
+table((info$SYNTAX<=10|is.na(info$SYNTAX<=10)))
+
+info$stage[which(info$Exclude_CAD==1 & (info$SYNTAX<=10|is.na(info$SYNTAX<=10)) )]="Normal"
+info$stage[which(info$Exclude_CAD==1 )]="Normal" #2021/11/16
+info$stage[which(info$SCAD==1)]="SCAD"	
+info$stage[which(info$UA==1)]="UA"	
+info$stage[which(info$MI==1)]="MI"	
+info$stage=factor(info$stage,levels=c("Normal","SCAD","UA","MI"))
+info$stage=as.numeric(info$stage)
+
+### no healthy control are need, for it is future.
+info=info[which(info$stage>1 | is.na(info$stage)),]
+## remove age<30
+table(info$age> 25 | is.na(info$age) )
+info =info[which(info$age> 25 | is.na(info$age) ),]
+dim(info)
+rownames(info)=info[,1]
+
+## 5 * 5 cross validation
+#Model fit was evaluated by discrimination C statistics and calibration ??2 using the modified Nam-D??Agostino test.22?C24
+# 24.Demler OV, Paynter NP, Cook NR. Tests of calibration and goodness-of-fit in the survival setting.Stat Med. 2015; 34:1659?C1680. doi: 10.1002/sim.6428.
+# https://ncook.bwh.harvard.edu/r-code.html ..
+# Internal consistency of the discrimination and calibration performance measures was evaluated by a 10??10 cross-validation technique.25
+# 25 Steyerberg EW, Harrell FE, Borsboom GJ, Eijkemans MJ, Vergouwe Y, Habbema JD. Internal validation of predictive models: efficiency of some procedures for logistic regression analysis.J Clin Epidemiol. 2001; 54:774?C781.
+# Frank E Harrell Jr https://cran.r-project.org/web/packages/rms/index.html
+# https://biostat.app.vumc.org/wiki/pub/Main/RmS/logistic.val.pdf
+# https://hbiostat.org/doc/simval.htm
+#nm = intersect(rownames(out_meta[[2]]),rownames(out_mebo[[2]]))
+#pred = data.frame( out_meta[[2]][pmatch(nm,rownames(out_meta[[2]])),],mebo_pred = out_mebo[[2]][pmatch(nm,rownames(out_mebo[[2]])),1])
+#pdf("person.mace.risk.scatter.pdf")
+#plot(pred[,1],pred[,"mebo_pred"],col=c(4,2)[pred$status+1],pch=c(1,19)[pred$status+1], 
+#     xlab="Linear MACE risk prediction by microbiome",ylab="Linear MACE risk prediction by fecal metabolites")
+#abline(a=0,b=1)
+#abline(h=0)
+#abline(v=0)
+#text(-2,2,label="Fecal mebo determinants",cex=0.8)
+#text(1.5,-1,label="Microbiome determinants",cex=0.8)
+#legend("bottomleft",legend=c("MACE","Non MACE"),col=c(2,4), pch=c(19,1),bty="n",cex=0.5)
+#dev.off()
+
+#MGS
+mp2= read.csv("E:/gut/model/Acvd2020.mgs.prof.rename.csv",row.names=1,head=T)
+mark = read.csv("E:/gut/model/MACE4_coxph/mgs.coxph.mace4.more.update_tax.csv",row.names=1,head=T)
+meta_p = mark_pick(mp2,mark,corcut=0.8) # microbiome
+#meta_p = mark_pick(mp2,mark,corcut=0.8,pcut=0.01)
+set.seed(0)
+out_mgs = GND_result(meta_p,info,mace=1,logx=T)
+
+#Pathways
+mp2= read.csv("E:/gut/model/Acvd2020.ko.prof.rename.csv",row.names=1,head=T)
+mark = read.csv("E:/gut/model/MACE4_coxph/ko.coxph.mace4.more.update1.csv",row.names=1,head=T)
+meta_p = mark_pick(mp2,mark,corcut=0.8,pcut=0.01) # microbiome
+set.seed(0)
+out_pathway = GND_result(meta_p,info,mace=1,logx=T)
+
+#Fecal lipids
+mp2= t(read.csv("E:/gut/model/Acvd2020.Fecel-Lipidomics.prof.rename.T.csv",row.names=1,head=T))
+mark = read.csv("E:/gut/model/MACE4_coxph/Fecel-Lipidomics.coxph.mace4.more.update_tax.csv",row.names=1,head=T)
+mebo_p = mark_pick(mp2,mark,corcut=0.8) # metabolite
+set.seed(0)
+out_lipid = GND_result(mebo_p,info,mace=1,logx=F) 
+
+#Fecal Metabolomics
+mp2= t(read.csv("E:/gut/model/Acvd2020.Fecel-Metabolomics.prof.rename.T.csv",row.names=1,head=T))
+mark = read.csv("E:/gut/model/MACE4_coxph/Fecel-Metabolomics.coxph.mace4.more.update_tax.csv",row.names=1,head=T)
+mebo_p = mark_pick(mp2,mark,corcut=0.8) # metabolite
+set.seed(0)
+out_mebo= GND_result(mebo_p,info,mace=1,logx=F)
+
+#MGS + fecal,Lipidomics
+mp2= read.csv("E:/gut/model/Acvd2020.mgs.prof.rename.csv",row.names=1,head=T)
+mark = read.csv("E:/gut/model/MACE4_coxph/mgs.coxph.mace4.more.update_tax.csv",row.names=1,head=T)
+mark1 = mark
+meta_p = mark_pick(mp2,mark,corcut=0.8) # microbiome
+mp2= t(read.csv("E:/gut/model/Acvd2020.Fecel-Lipidomics.prof.rename.T.csv",row.names=1,head=T))
+mark = read.csv("E:/gut/model/MACE4_coxph/Fecel-Lipidomics.coxph.mace4.more.update_tax.csv",row.names=1,head=T)
+mark2 = mark
+nj = intersect(colnames(mark1),colnames(mark2))
+mark3 = data.frame( rbind(mark1[,match(nj,colnames(mark1))],
+                          mark2[,match(nj,colnames(mark2))]))
+mebo_p = mark_pick(mp2,mark,corcut=0.8) # metabolite
+# merge for later analysis, microbiome + metabolite
+n_m = intersect(colnames(meta_p), colnames(mebo_p))
+print(length(n_m))
+meta = rbind(meta_p[,pmatch(n_m,colnames(meta_p))],mebo_p[,pmatch(n_m,colnames(mebo_p))])
+dim(meta)
+rownames(meta)
+
+library("rms")
+
+
+set.seed(0)
+out_all = GND_result(meta,info,mace=1,logx=T)
+
+#MGS + fecal,metabolites
+mp2= read.csv("E:/gut/model/Acvd2020.mgs.prof.rename.csv",row.names=1,head=T)
+mark = read.csv("E:/gut/model/MACE4_coxph/mgs.coxph.mace4.more.update_tax.csv",row.names=1,head=T)
+mark1 = mark
+meta_p = mark_pick(mp2,mark,corcut=0.8)
+#meta_p = mark_pick(mp2,mark,corcut=0.5,pcut=0.01) # microbiome
+mp2= t(read.csv("E:/gut/model/Acvd2020.Fecel-Metabolomics.prof.rename.T.csv",row.names=1,head=T))
+mark = read.csv("E:/gut/model/MACE4_coxph/Fecel-Metabolomics.coxph.mace4.more.update_tax.csv",row.names=1,head=T)
+mark2 = mark
+nj = intersect(colnames(mark1),colnames(mark2))
+mark3 = data.frame( rbind(mark1[,match(nj,colnames(mark1))],
+                          mark2[,match(nj,colnames(mark2))]))
+mebo_p = mark_pick(mp2,mark,corcut=0.8) # metabolite
+# merge for later analysis, microbiome + metabolite
+n_m = intersect(colnames(meta_p), colnames(mebo_p))
+print(length(n_m))
+meta = rbind(meta_p[,pmatch(n_m,colnames(meta_p))],mebo_p[,pmatch(n_m,colnames(mebo_p))])
+dim(meta)
+rownames(meta)
+
+library("rms")
+
+
+set.seed(0)
+out_all = GND_result(meta,info,mace=1,logx=T)
