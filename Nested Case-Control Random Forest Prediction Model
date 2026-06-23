@@ -1,0 +1,385 @@
+### merge function and species
+#mgs_ko
+setwd("E:/gut/model/")
+profname = "mgs"
+amp2= read.csv(paste("Acvd2020.",profname,".prof.rename.csv",sep=""),row.names=1,head=T)
+profname = "ko"
+bmp2= read.csv(paste("Acvd2020.",profname,".prof.rename.csv",sep=""),row.names=1,head=T)
+bmp2 = bmp2[,pmatch(colnames(amp2),colnames(bmp2))]
+mp2 = rbind(amp2,bmp2)
+profname = "mgs_ko"
+
+#mgs
+profname = "mgs"
+mp2= read.csv(paste("Acvd2020.",profname,".prof.rename.csv",sep=""),row.names=1,head=T)
+#ko
+profname = "ko"
+mp2= read.csv(paste("Acvd2020.",profname,".prof.rename.csv",sep=""),row.names=1,head=T)
+#Fecel-Metabolomics
+profname = "Fecel-Metabolomics"
+mp2= read.csv(paste("Acvd2020.",profname,".prof.rename.T.csv",sep=""),row.names=1,head=T)
+mp2= as.data.frame(t(mp2))
+#Fecel-Lipidomics
+profname = "Fecel-Lipidomics"
+mp2= read.csv(paste("Acvd2020.",profname,".prof.rename.T.csv",sep=""),row.names=1,head=T)
+mp2= as.data.frame(t(mp2))
+
+#mgs_Fecel-Metabolomics
+setwd("E:/gut/model/")
+profname = "mgs"
+amp2= read.csv(paste("Acvd2020.",profname,".prof.rename.csv",sep=""),row.names=1,head=T)
+profname = "Fecel-Metabolomics"
+bmp2= read.csv(paste("Acvd2020.",profname,".prof.rename.T.csv",sep=""),row.names=1,head=T)
+bmp2= as.data.frame(t(bmp2))
+# 找到两个数据框共有的列名
+common_cols <- intersect(colnames(amp2), colnames(bmp2))
+
+# 按照共有的列名提取并重新排序
+amp2_sub <- amp2[, common_cols]
+bmp2_sub <- bmp2[, common_cols]
+
+# 检查匹配后的列名是否完全一致
+identical(colnames(amp2_sub), colnames(bmp2_sub))
+mp2 = rbind(amp2_sub,bmp2_sub)
+
+#med_lip
+setwd("E:/gut/model/")
+profname = "mgs"
+amp2= read.csv(paste("Acvd2020.",profname,".prof.rename.csv",sep=""),row.names=1,head=T)
+profname = "Fecel-Lipidomics"
+bmp2= read.csv(paste("Acvd2020.",profname,".prof.rename.T.csv",sep=""),row.names=1,head=T)
+bmp2= as.data.frame(t(bmp2))
+# 找到两个数据框共有的列名
+common_cols <- intersect(colnames(amp2), colnames(bmp2))
+
+# 按照共有的列名提取并重新排序
+amp2_sub <- amp2[, common_cols]
+bmp2_sub <- bmp2[, common_cols]
+
+# 检查匹配后的列名是否完全一致
+identical(colnames(amp2_sub), colnames(bmp2_sub))
+mp2 = rbind(amp2_sub,bmp2_sub)
+
+#cli
+# 1. 载入必要的库
+library(caret)
+
+# 2. 定义变量名清单
+cder_var <- c("Center", "age", "Sex", "drinking", "smoking", "BB", "CCB", "PPI", "ACEI", "Aspirin", "Clop",
+              "SBP", "DBP", "hyperT", "HDLC", "LDLC", "TRIG", "BMI")
+
+# 3. 提取临床指标
+cder <- info[, cder_var]
+
+# 4. 处理缺失值 < 10% 的变量：使用中位数插补
+# 这种方法适用于低缺失率的连续变量
+low_miss_vars <- colnames(cder)[apply(cder, 2, function(x) mean(is.na(x))) < 0.1]
+for (var in low_miss_vars) {
+  if (is.numeric(cder[[var]])) {
+    cder[is.na(cder[, var]), var] <- median(cder[, var], na.rm = TRUE)
+  }
+}
+
+# 5. 处理缺失值 > 10% 的变量：转化为分类因子
+# 定义转换函数，将数值划分为等级并保留 "miss" 类别以应对缺失数据
+transx <- function(x, low_band, high_band) {
+  y <- rep("miss", length(x))
+  y[which(x <= low_band)] <- "first"
+  y[which(x >= high_band)] <- "later"
+  y[which(x < high_band & x > low_band)] <- "normal"
+  return(factor(y))
+}
+
+# 根据临床意义设定阈值进行分类
+cder$BMI      <- transx(cder$BMI, 11, 27)
+cder$smoking  <- transx(cder$smoking, -0.1, 0.9)
+cder$drinking <- transx(cder$drinking, -0.1, 0.9)
+cder$SBP      <- transx(cder$SBP, 120, 140)
+cder$DBP      <- transx(cder$DBP, -0.1, 80)
+
+# 6. 对关键生化指标进行对数转换
+# 在组学研究中，对数转换有助于处理偏态分布的数据
+for (var in c("age", "HDLC", "LDLC", "TRIG")) {
+  # 确保数据为正数以进行 log 转换
+  cder[, var] <- log(cder[, var] + 1e-6) 
+}
+
+# 7. 再次检查并填补可能残余的缺失值
+jclin <- cder
+remaining_na_vars <- colnames(jclin)[apply(jclin, 2, function(x) any(is.na(x)))]
+for (var in remaining_na_vars) {
+  if (is.numeric(jclin[[var]])) {
+    jclin[is.na(jclin[, var]), var] <- median(jclin[, var], na.rm = TRUE)
+  }
+}
+
+# 8. 哑变量化处理 (Dummy Variables)
+# 将分类变量（包括 'miss' 类别）转化为数值矩阵
+# [,-1] 用于移除截距项
+jclin_mat <- model.matrix(~ . , data = jclin)[, -1]
+jclin <- as.data.frame(jclin_mat)
+
+# 9. 定义并执行相关性过滤
+# 移除相关系数 > 0.8 的冗余变量以减少多重共线性
+findcor <- function(conf) {
+  res.cor <- cor(conf, use = "pairwise.complete.obs")
+  res.cor[is.na(res.cor)] <- 0
+  # 使用 caret 包的 findCorrelation 函数
+  res.id <- findCorrelation(res.cor, cutoff = 0.8, exact = FALSE)
+  if (length(res.id) != 0) {
+    conf <- conf[, -res.id]
+  }
+  return(conf)
+}
+
+# 得到最终用于建模的临床数据矩阵
+jclin_final <- findcor(jclin)
+
+# 查看处理后的维度
+print(dim(jclin_final))
+bmp2 <- as.data.frame(t(jclin_final))
+mp2 <- bmp2
+profname = "cli"
+#mgs
+profname = "mgs"
+amp2= read.csv(paste("Acvd2020.",profname,".prof.rename.csv",sep=""),row.names=1,head=T)
+# 找到两个数据框共有的列名
+common_cols <- intersect(colnames(amp2), colnames(bmp2))
+
+# 按照共有的列名提取并重新排序
+amp2_sub <- amp2[, common_cols]
+bmp2_sub <- bmp2[, common_cols]
+
+# 检查匹配后的列名是否完全一致
+identical(colnames(amp2_sub), colnames(bmp2_sub))
+mp2 = rbind(amp2_sub,bmp2_sub)
+### read mp2 prof
+#profname = "mp2"
+#profname = "mgs"
+#profname = "bracken"
+#profname = "human2"
+#profname = "ko"
+#mp2= read.csv("Acvd2020.mp2.prof.rename.csv",row.names=1,head=T)
+#mp2= read.csv("Acvd2020.human2.prof.rename.csv",row.names=1,head=T)
+#mp2= read.csv("Acvd2020.ko.prof.rename.csv",row.names=1,head=T)
+#mp2= read.csv("Acvd2020.mlg.prof.rename.csv",row.names=1,head=T)
+#mp2= read.csv("Acvd2020.mgs.prof.rename.csv",row.names=1,head=T)
+#mp2= read.csv("Acvd2020.bracken.prof.rename.csv",row.names=1,head=T)
+#mp2= read.csv(paste("Acvd2020.",profname,".prof.rename.csv",sep=""),row.names=1,head=T)
+
+
+
+
+library(openxlsx)
+## read sample info
+cder_var= c("Center","age","Sex","drinking","smoking","BB","CCB","PPI","ACEI","Aspirin","Clop","ARB","AGIs","Biguanide",
+            "SBP","DBP","hyperT","HDLC","LDLC","TRIG","BMI","Tica","Statin")  # 52 high,23 lw for WBC, 
+info = read.xlsx("2021-2-3 MWAS_251216.xlsx")
+covar <- read.xlsx("covar.xlsx")
+info = merge(info,covar,by="Sample_ID")
+#info <- read.xlsx("2021-2-3 MWAS_251216.xlsx")
+rownames(info) <- info[,1]
+info <- info[,-1]
+#info = read.csv("2021_2_3_MWAS_no_chinese.240406.csv",head=T,as.is=T,row.names=1) #2024/04/06
+colnames(info)=gsub("\\.$","",gsub("^X.","",colnames(info)))
+match(  gsub("\"","",colnames(mp2)),gsub("\"","",rownames(info)) ) ## only 35 samples don't have information
+match(  gsub("\"","",rownames(info)), gsub("\"","",colnames(mp2)) ) ## only 115  don't have samples
+
+
+match( c("M19011254a","M19011497a","M19011922a"),  rownames(info)) 
+info=info[which(is.na(info$antibiotic1)),]### remove antibiotic samples
+info=info[info$cancer==0 | is.na(info$cancer) ,]### also no cancer, 2022/1/12 
+info$stage=rep(NA,nrow(info))	
+info$stage[which(info$Exclude_CAD==1 & (info$SYNTAX<=10|is.na(info$SYNTAX<=10)) )]="Normal"
+info$stage[which(info$Exclude_CAD==1 )]="Normal" #2021/11/16
+info$stage[which(info$SCAD==1)]="SCAD"	
+info$stage[which(info$UA==1)]="UA"	
+info$stage[which(info$MI==1)]="MI"	
+info$stage=factor(info$stage,levels=c("Normal","SCAD","UA","MI"))
+info$stage1=factor(info$stage,levels=c("Normal","SCAD","UA","MI"))
+info$stage=as.numeric(info$stage)
+### no healthy control are need, for it is future. 79 normal
+info=info[which(info$stage>1 | is.na(info$stage)),]
+## remove age<30
+info =info[which(info$age> 25 | is.na(info$age) ),]
+
+
+
+
+### intersect meta and metagenomic
+nm=intersect(gsub("\"","",colnames(mp2)),gsub("\"","",rownames(info) ))
+length(nm)
+dim(info)
+dim(mp2)
+match( gsub("\"","",rownames(info)), gsub("\"","",colnames(mp2)) )
+
+info=info[pmatch(nm,gsub("\"","",rownames(info))),]
+table(info$Death)
+table(info$MACE)
+
+### recompute mace , for death is also mace
+## we used mace 3
+#exp_dat=data.frame( MACE=apply(info[,c("MACE_3","Death","Isch")],1,function(x){x=as.numeric(x); ifelse(all(is.na(x)),NA, as.numeric(sum(x,na.rm=T)>0) )   }), 
+#                    MACE_time_wdl=apply(info[,c("MACE3_time","Death_time","Isch_time")],1,function(x){x=as.numeric(x); ifelse(all(is.na(x)),NA,min(x,na.rm=T) ) }))
+#exp_dat = data.frame(
+#  MACE = as.numeric(info$MACE6),
+#  MACE_time_wdl = as.numeric(info$MACE6_time)
+#)
+
+exp_dat = data.frame(
+  MACE = as.numeric(info$MACE4),
+  MACE_time_wdl = as.numeric(info$MACE4_time)
+)			
+table(exp_dat$MACE)
+info$MACE=exp_dat$MACE
+info$MACE_time_wdl =info$MACE_time_wdl
+
+### keep spcies with 5% smaples
+mpx=mp2[,pmatch( nm ,gsub("\"","",colnames(mp2)) )]
+rest= mp2[,-pmatch( nm ,gsub("\"","",colnames(mp2)) )]
+mpx=mpx[apply(mpx,1,function(x){mean(x>0)>=0.05}),]
+dim(mpx)
+mpx=t(mpx)
+
+### train x
+dat = mpx
+
+
+### nest case control
+
+
+library(randomForest)
+library(pROC)
+
+reselect_predc =  function(end_var,end_time,dat ){
+  library("doMC")
+  registerDoMC(16) #number of cores on the machine
+  id1=which(info[,end_var]==1)	
+  id2=which(info[,end_var]==0)	
+  set.seed(0)
+  ## re-selection control
+  predx= foreach(i= 1:25, .combine=rbind ) %dopar% {
+    id3= sample(id2,length(id1),replace=T)
+    id=c(id1,id3)
+    all.rf <- randomForest( dat[id,] ,  factor(info[id,end_var]),ntree=1000 , importance=T)
+    xj = all.rf$importance[,"MeanDecreaseGini"]
+    names(xj) = rownames(all.rf$importance)
+    write.csv(xj,paste("E:/gut/model/figure1a/cli/",end_var,"_boot_",i, ".20240406.imp.csv",sep=""))
+    
+    impvar <- rownames(all.rf$importance)[order(all.rf$importance[, 1], decreasing = TRUE)[1:min(50,nrow(all.rf$importance))]]
+    rf <- randomForest( dat[id,impvar] ,  factor(info[id,end_var]),ntree=1000 , importance=T)
+    #print(rf$confusion)	
+    data.frame(pred = rf$votes[,2], measure= info[id,end_var],id=info[id,1],boot=i,type=end_var )						
+  }
+  
+  #### match case, control
+  matchvar=c("age","Sex","weight","drinking","smoking")
+  info1=info[,matchvar]
+  for(i in 1:ncol(info1)){
+    info1[is.na(info1[,i]),i]=median(info1[,i],na.rm=T)
+  }
+  info1=scale(info1)
+  dix = as.matrix(dist(info1))
+  id3=c()
+  for(case in id1){
+    id3=c(id3,id2[which.min(dix[case,id2])])
+  }
+  id=c(id1,id3)
+  all.rf <- randomForest( dat[id,] ,  factor(info[id,end_var]),ntree=1000 , importance=T)
+  xj = all.rf$importance[,"MeanDecreaseGini"]
+  names(xj) = rownames(all.rf$importance)
+  write.csv(xj,paste("E:/gut/model/figure1a/cli/",end_var,"_boot_",100, ".20240406.imp.csv",sep=""))
+  
+  impvar <- rownames(all.rf$importance)[order(all.rf$importance[, 1], decreasing = TRUE)[1:min(50,nrow(all.rf$importance))]]
+  rf <- randomForest( dat[id,impvar] ,  factor(info[id,end_var]),ntree=1000 , importance=T)
+  print("match+++++++++")	
+  print(roc(factor(info[id,end_var]),rf$votes[,2],ci=T)$ci[2] )
+  predx=rbind(predx, data.frame(pred = rf$votes[,2], measure= info[id,end_var],id=info[id,1],boot=100,type=end_var ))						
+  
+  tmp =data.frame(target=factor(info[id,end_var]), log10(dat[id,impvar]+1e-12) )
+  colnames(tmp)[1]="target"
+  mod = glm(target ~ ., data=tmp,family = binomial(link = "logit") )
+  saveRDS(mod,paste("E:/gut/model/figure1a/cli/",end_var,".20240406.glm.rds",sep=""))
+  predx
+  
+  
+}
+average_imp = function(end_var){
+  
+  res=c()
+  for(i in c(1:25,100)){
+    xj = read.csv(paste("E:/gut/model/figure1a/cli/",end_var,"_boot_",i, ".20240406.imp.csv",sep=""),row.names=1)
+    res = rbind(res,t(xj))
+  }
+  res =t(res)
+  res1 = data.frame( apply(res[,1:25],1,mean,na.rm=T),res[,26])
+  res1 = res1[order(res1[,2],decreasing=T),]
+  write.csv(res1,paste0("E:/gut/model/figure1a/cli/",profname,"_",end_var,".average.importance.csv") )
+  
+}
+set.seed(0)
+pred1 =  reselect_predc("Death","Death_time",dat)
+average_imp("Death")
+set.seed(0)
+pred2 =  reselect_predc("MACE","MACE_time_wdl",dat)
+average_imp("MACE")
+stat = function(pred1){
+  bb= unique(pred1$boot)
+  res=c()
+  for( b in bb){
+    
+    res=rbind(res, data.frame(roc=roc(factor(pred1[pred1$boot==b, "measure"]),pred1[pred1$boot==b, "pred"],ci=T)$ci[2],
+                              boot=b) )
+  }
+  print(quantile(res[,1],prob=c(0.05,0.5, 0.95)))
+  res
+}
+roc1 = stat(pred1)
+roc2 = stat(pred2)
+write.csv(rbind(pred1,pred2),paste("E:/gut/model/figure1a/cli/",profname,".prediction.20240406.csv",sep=""),row.names=F )
+
+
+
+
+############# plot
+profname = "ko"
+#profname = "mp2"
+#profname = "mgs"
+#profname = "bracken"
+#profname = "human2"
+#profname = "ko"
+
+pred = read.csv(paste("E:/gut/model/figure1a/cli/",profname,".prediction.20240406.csv",sep=""),as.is=T )
+library(RColorBrewer)
+library(pROC)		
+
+pdf(paste("E:/gut/model/figure1a/cli/figure1a.",profname,"nested_case_control_roc.pdf",sep=""),
+    width = 9, height = 4.5)
+par(mfrow=c(1,2))
+par(mar=c(4,4,4,4))
+outx=c()
+roc1=roc(factor(pred[pred$boot==100 & pred$type=="Death", "measure"]),pred[pred$boot==100& pred$type=="Death", "pred"],percent=TRUE, plot=T, ci=TRUE,col=grey(0.8) ,main="Death")
+for(i in c(1:25)){
+  roc1=roc(factor(pred[pred$boot==i& pred$type=="Death", "measure"]),pred[pred$boot==i& pred$type=="Death", "pred"],percent=TRUE, plot=T, ci=TRUE,col=grey(0.8) ,add=T)
+  outx=c(outx,roc1$ci[2])
+}
+roc1=roc(factor(pred[pred$boot==100& pred$type=="Death", "measure"]),pred[pred$boot==100& pred$type=="Death", "pred"],percent=TRUE, plot=T, ci=TRUE,col=brewer.pal(8, "Set1")[c(2)] ,add=T)
+tmp = quantile(outx, prob=c(0.025,0.5,0.975))
+
+legend("bottomright", c( paste("ALL AUC= ",round(tmp[2],3),"% (", round(tmp[1],3),"% ,",round(tmp[3],3),"% )",sep="") ),
+       bty="n", col=c(brewer.pal(8, "Set1")[c(2)] ), lty=c(1,1) )
+
+
+outx=c()	
+roc1=roc(factor(pred[pred$boot==100 & pred$type=="MACE", "measure"]),pred[pred$boot==100& pred$type=="MACE", "pred"],percent=TRUE, plot=T, ci=TRUE,col=grey(0.8) ,main="MACE")
+for(i in c(1:25)){
+  roc1=roc(factor(pred[pred$boot==i& pred$type=="MACE", "measure"]),pred[pred$boot==i& pred$type=="MACE", "pred"],percent=TRUE, plot=T, ci=TRUE,col=grey(0.8) ,add=T)
+  outx=c(outx,roc1$ci[2])
+}
+roc1=roc(factor(pred[pred$boot==100& pred$type=="MACE", "measure"]),pred[pred$boot==100& pred$type=="MACE", "pred"],percent=TRUE, plot=T, ci=TRUE,col=brewer.pal(8, "Set1")[c(2)] ,add=T)
+#tmp= as.numeric(roc1$ci)
+tmp = quantile(outx, prob=c(0.025,0.5,0.975))
+
+legend("bottomright", c( paste("ALL AUC= ",round(tmp[2],3),"% (", round(tmp[1],3),"% ,",round(tmp[3],3),"% )",sep="") ),
+       bty="n", col=c(brewer.pal(8, "Set1")[c(2)] ), lty=c(1,1) )
+dev.off()
