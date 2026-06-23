@@ -1,0 +1,1488 @@
+read_bimed = function(file){ #Fecel_Lipidomics-mgs.bidirection_mediantion.csv
+  bimed = read.csv(paste("E:\\gut\\model\\glm_more_update\\",
+                         file,sep=""),as.is=T,head=T,row.names=1)
+  # FDR mediation < 0.05 and Pinverse mediation > 0.05
+  bimed$t1.ACME.FDR = p.adjust(bimed$t1.ACME.p,method="BH")
+  bimed$t2.ACME.FDR = p.adjust(bimed$t2.ACME.p,method="BH")
+  
+  ## venn diagram
+  fdr.cutoff =0.05
+  bimed$MediationDirection=c()
+  bimed$MediationDirection[bimed$t1.ACME.FDR<fdr.cutoff & 
+                             bimed$t1.Prop.mediated.p<0.05 &
+                             bimed$t2.ACME.FDR<fdr.cutoff &
+                             bimed$t2.Prop.mediated.p<0.05] <- 'both'
+  bimed$MediationDirection[bimed$t1.ACME.FDR<fdr.cutoff &
+                             bimed$t1.Prop.mediated.p<0.05] <- 'indv_dv1'
+  
+  med_count<-table(bimed$MediationDirection)
+  if(length(med_count)>2){
+    library(VennDiagram)
+    venn.plot = draw.pairwise.venn(med_count[2]+med_count[1],
+                                   med_count[3]+med_count[1],
+                                   med_count[1], 
+                                   category = c("Direction 1", "Direction 2"), lty = rep("blank",2), fill =c("#4472c4", "#00b050"), alpha = rep(0.5, 2), cat.pos = c(0, 0), cat.cex = c(0.5, 0.5),cat.dist = rep(0.025, 2), scaled = F)
+    grid.draw(venn.plot);
+  }
+  
+  bimed =bimed[which(bimed$t1.ACME.FDR<0.05 & bimed$t2.ACME.FDR >0.05 & bimed$t1.Prop.mediated.p<0.05),] 
+  med = bimed[bimed$t1.Prop.mediated >0,]
+  print(dim(med))
+  med
+}
+
+# try alluvial diagram
+alluvial_plot=function(med){
+  library(ggplot2)
+  library(ggalluvial)
+  library(wesanderson)
+  med$fre<-1
+  sankey_colors<-c(wes_palette("Darjeeling1", length(unique(med$outcome)), type = "continuous"))
+  p1= ggplot(med,aes(axis1 = tax, 
+                     axis2 = mebo, 
+                     axis3 = outcome,
+                     y=med$fre))+
+    scale_x_discrete(limits = c("Microbime", "Metabolites", "Heart function")) +
+    geom_alluvium(aes(fill = med$outcome),alpha = .55)+
+    geom_stratum(alpha = 0,color = adjustcolor( "white", alpha.f = 1),size=1.2)+
+    geom_text(stat = "stratum",cex=2,aes(label = after_stat(stratum))) +
+    scale_color_manual(values=sankey_colors)+
+    scale_fill_manual(values=sankey_colors)+
+    theme_minimal()+
+    theme(legend.position="none",
+          axis.text = element_text(size = 10),
+          axis.title = element_blank(),
+          axis.text.y = element_blank(),
+          panel.grid=element_blank())
+  p1
+}
+
+# try networkD3
+sankeyplot = function(med){
+  nodes = data.frame(name =unique(c(med$mebo,med$outcome,med$tax)))
+  rownames(nodes)=0:(nrow(nodes)-1)
+  nodes$nodegroup = nodes$name
+  nodes$nodegroup = ifelse(!is.na(pmatch(nodes$nodegroup,med$mebo)), med[pmatch(nodes$nodegroup,med$mebo),"meboclass"],
+                           nodes$nodegroup )
+  
+  links = rbind( data.frame( source = as.numeric(rownames(nodes)[pmatch(med$tax,nodes$name,duplicates.ok=T)]),
+                             target = as.numeric(rownames(nodes)[pmatch(med$mebo,nodes$name,duplicates.ok=T)]),
+                             value = med$t1.Prop.mediated,energy_type= c("#65A8C4", "#FFFF00", "#FF7AB6")[sign(med$t1.inv_med.beta)+2]  ), 
+                 data.frame( source = as.numeric(rownames(nodes)[pmatch(med$mebo,nodes$name,duplicates.ok=T)]),
+                             target = as.numeric(rownames(nodes)[pmatch(med$outcome,nodes$name,duplicates.ok=T)]),
+                             value = med$t1.Prop.mediated,energy_type=c("#65A8C4", "#FFFF00", "#FF7AB6")[sign(med$t1.med_dv.beta)+2] )
+  )
+  head(links)
+  
+  
+  library(networkD3)
+  sankeyNetwork(Links = links, 
+                Nodes = nodes, 
+                Source = "source",
+                Target = "target", 
+                Value = "value", 
+                NodeID = "name",
+                nodePadding = 10,
+                units = "TWh", # optional units name for popups
+                fontSize = 12, 
+                nodeWidth = 30,
+                LinkGroup = "energy_type",
+                NodeGroup = "nodegroup",
+                width = 1000,  #width 800, 1000 for pathway
+                height = 500 # height  1/5, 600*1/2 =300 for lipids
+  )
+}
+
+# ec link to metabolites
+ec_buble = function(med, tax){
+  tax[tax[,1]=="MEDP271",1:9]
+  med$keggid = tax[pmatch(med$phenotype,tax[,1],duplicates.ok=T),"KEGG.ID"]
+  # compound ,ec, ko, pathway
+  library(KEGGREST)
+  comec <- keggLink("compound", "ec")
+  com_pa <- keggLink("compound", "pathway")
+  pa_ec <- keggLink("pathway", "ko")
+  pa <- keggList("pathway")
+  ecko <- keggLink("ec", "ko")
+  vec_df = function(rxn2enz){
+    # make a pathway compound list
+    pa_c =c()
+    for( pa in unique(rxn2enz)){
+      zz = c(pa, paste(names(rxn2enz[rxn2enz==pa]),collapse=","))
+      zz = c(zz, length(unlist(strsplit(zz[2],",",fixed=T))) )
+      
+      pa_c = rbind( pa_c,zz )
+    }
+    data.frame(pa_c)
+  }						
+  s1 = vec_df(comec)
+  colnames(s1)=c("cpd","ec","ec_num")
+  s2 = vec_df(com_pa)	
+  colnames(s2)=c("cpd","pathway","pa_num")		
+  # outer merge s1, s2
+  s3 = merge(x = s1, y = s2, by = "cpd", all = TRUE)
+  
+  
+  
+  
+  # read ko list to filter some pathway or ec
+  s4 = vec_df(ecko)	
+  colnames(s4)=c("ec","ko","ko_num")	
+  ko_m = read.csv("E:/gut/model/MACE4_coxph/ko.coxph.mace4.more.update1.csv",row.names=1,head=T,as.is=T)
+  ## some ec do not have microbiome ko
+  s4$ko_m = sapply( s4$ko,function(x){ 
+    tem = gsub("ko:","",unlist(strsplit(x,",",fixed=T)));
+    paste(tem[tem%in%ko_m$tax],collapse=";")
+  })
+  ## some compound do not have microbiome ec
+  s3$ec_m = sapply( s3$ec,function(x){ 
+    tem = unlist(strsplit(x,",",fixed=T));
+    paste( tem[tem%in%s4$ec[s4$ko_m != ""]],collapse=";")
+  })
+  
+  ## pathway compeleteness
+  s5 = vec_df(pa_ec)
+  colnames(s5)=c("pathway","ko","ko_num")
+  s5$ko_m = sapply( s5$ko,function(x){ 
+    tem = gsub("ko:","",unlist(strsplit(x,",",fixed=T)));
+    paste(tem[tem%in%ko_m$tax],collapse=";")
+  })	
+  s5$compleness = 	sapply( s5$ko_m,function(x){ 
+    length(unlist(strsplit(x,";",fixed=T)))
+  })	
+  s5$compleness = as.numeric(s5$compleness) / as.numeric(s5$ko_num)
+  ### no means pathway
+  ## path:map01120:Microbial metabolism in diverse environments;
+  ## path:map01240:Biosynthesis of cofactors
+  ## path:map01110:Biosynthesis of secondary metabolites
+  ##path:map00997:Biosynthesis of various secondary metabolites - part 3;	
+  ## path:map01230:Biosynthesis of amino acids;
+  ## path:map00970:Aminoacyl-tRNA biosynthesis;
+  ## path:map01120:Microbial metabolism in diverse environments;
+  rem = c("path:map01100","path:map01240","path:map01110","path:map00997",
+          "path:map01230","path:map00970","path:map01120")
+  s5$compleness[s5$pathway%in%rem]=0
+  ### 	only kept 	compleness >20% as microbiome pathway
+  s3$pa_m = 	sapply( s3$pathway,function(x){ 
+    tem = unlist(strsplit(x,",",fixed=T));
+    paste( tem[tem%in%s5$pathway[which(s5$compleness>0.2)]],collapse=",")
+  })
+  s3$pa_m_tax = sapply( s3$pa_m,function(x){ 
+    paste(paste(unlist(strsplit(x,",",fixed=T)),
+                pa[pmatch(unlist(strsplit(x,",",fixed=T)),names(pa))],sep=":"),collapse=";")
+  })
+  
+  s3$most_com_patax = sapply( s3$pa_m,function(x){ 
+    tm = s5[pmatch(unlist(strsplit(x,",",fixed=T)),s5$pathway),];
+    tm = tm[order(tm$compleness,decreasing=T),]; 
+    paste( tm[1,"pathway"],";",pa[pmatch(tm[1,"pathway"],names(pa))],";",round(tm[1,"compleness"],3),sep="")
+  })
+  s3[s3[,1]=="cpd:C15587",]
+  
+  ## we could further locate the ec and pathway by correlation ec to the compund
+  # run 6.key_factor.omics.plot.R
+  aso = process_sig(8,pref2)
+  head(aso)
+  
+  out2 = data.frame(med,s3[pmatch(med$keggid,gsub("cpd:","",s3$cpd)),c("ec_m","pa_m_tax","most_com_patax")])
+  com_ec2 =c()
+  for(i in 1:nrow(out2)){
+    if( grepl("ec:",out2$ec_m[i]) ){ ## multiple ec to one compund
+      tem  = unlist(strsplit(out2$ec_m[i],";",fixed=T))
+      aso1 = aso[aso$phenotype == out2$phenotype[i],]
+      res =c()
+      for(ii in 1:length(tem)){  ## multiple ko to one ec, kept the best ko for this ec
+        aso2 = aso1[aso1$sgb%in%unlist(strsplit(s4[pmatch(tem[ii],s4$ec),"ko_m"],";",fixed=T)),]
+        if(nrow(aso2)>1){
+          tem1 = aso2[which.min(aso2$qvalue),]
+        }else{
+          tem1 = aso2
+        }
+        res=rbind(res,tem1)
+      }
+      res = data.frame(res)
+      # we kept p<1e-5
+      #if( sum(res$Pr<1e-5) >0 ){
+      #	res1 = res[res$Pr<1e-5,]
+      #	res1$ec = tem[res$Pr<1e-5]
+      res1 = res
+      res1$ec = tem
+      com_ec2 = rbind(com_ec2,res1)
+      #}
+    }else{ # no ec,just keep
+      if( grepl("^C",out2$keggid[i]) ){
+        res1 = data.frame(sgb=NA, phenotype=out2$phenotype[i],   Estimate=NA, Std..Error=NA,
+                          t.value=NA,         Pr=NA,    qvalue=NA,ec=NA )
+        com_ec2 = rbind(com_ec2,res1)	
+      }
+    }
+  }
+  haha = com_ec2$phenotype
+  names(haha) = paste(gsub("1","",sign(com_ec2$Estimate)),com_ec2$ec,sep="")
+  s6 = vec_df(haha)
+  out2$ec_m_p = s6[pmatch(out2$phenotype,s6[,1],duplicates.ok=T),2]
+  
+  plotd = com_ec2[com_ec2$phenotype%in%out2$phenotype,]
+  plotd = data.frame(plotd, out2[pmatch(plotd$phenotype,out2[,"phenotype"],duplicates.ok=T),])
+  plotd[,c("mebo","ec_m","keggid","most_com_patax")]
+  
+  library(ggplot2)
+  plotd$colx = plotd$mebo
+  plotd$colx[plotd$Pr>=0.05]="not sig"
+  plotd$most_path = unlist(lapply(strsplit(as.character(plotd$most_com_patax),";",fixed=T),function(x){
+    ifelse(x[1]=="NA",NA,paste(x[1:2],collapse=";"))
+  }))
+  plotd$most_com = as.numeric(unlist(lapply(strsplit(as.character(plotd$most_com_patax),";",fixed=T),function(x){
+    ifelse(x[1]=="NA",NA,x[length(x)])
+  })))
+  
+  pd1 = data.frame(plotd[,c("mebo","Estimate","colx")],labx="")
+  pd2 = data.frame(plotd[,c("mebo","most_com")],colx="not sig",labx=plotd$pa_m_tax)
+  colnames(pd2)=colnames(pd1)
+  pd1$ec="direct ec"
+  pd2$ec="direct pathway"
+  pd3 = data.frame(rbind(pd1,pd2))
+  
+  library(papaja)
+  p1=ggplot(data =plotd, aes(x =reorder(mebo,Estimate), y = Estimate,color=factor(colx) )) + 
+    geom_hline(yintercept = 0, linetype=2) +
+    #geom_point(pch = 21, size=5, position = position_jitterdodge(jitter.width  = 0.1))+
+    geom_point(pch = 21, size=5)+
+    #scale_shape_manual(values = c(15, 19))+
+    xlab("")+
+    ylab("Coef between Direct Ec and compounds")+
+    coord_flip()+
+    papaja::theme_apa(base_size = 12)+
+    guides(color=FALSE,size=FALSE,shape=FALSE)+
+    theme(  axis.text.x = element_text(angle = 90, size = 12, vjust = 0),
+            strip.text = element_text(size=12),
+            panel.grid.major.y = element_line() )
+  
+  p1=ggplot(data =pd3, aes(x =reorder(mebo,Estimate), y = Estimate,color=factor(colx),label=labx )) + 
+    geom_hline(yintercept = 0, linetype=2) +
+    #geom_point(pch = 21, size=5, position = position_jitterdodge(jitter.width  = 0.1))+
+    geom_point(pch = 21, size=5)+
+    geom_text( data=pd3,aes(x=reorder(mebo,Estimate), y = -0.5,label=labx, colour=factor(colx)),
+               fontface='bold',
+               position=position_dodge(width = 0.9),  vjust=0,hjust=0)+
+    #scale_shape_manual(values = c(15, 19))+
+    facet_wrap(~ ec, ncol=2,scale="free_x")+
+    xlab("")+
+    ylab("Coef between Direct Ec and compounds")+
+    coord_flip()+
+    papaja::theme_apa(base_size = 12)+
+    guides(color=FALSE,size=FALSE,shape=FALSE)+
+    theme(  axis.text.x = element_text(angle = 90, size = 12, vjust = 0),
+            strip.text = element_text(size=12),
+            panel.grid.major.y = element_line() )
+  
+  
+  p1 	
+  
+}
+clique_plot = function(med,size){
+  library("igraph")
+  tmp = med[order(med[,"t1.Prop.mediated"],decreasing=T)[1:min(nrow(med),size)],]
+  # make a clique
+  #tmp$outcome = paste( tmp$outcome,1:nrow(tmp), sep=" ")
+  #tmp$mebo = paste( tmp$mebo,1:nrow(tmp), sep=" ")
+  #tmp$tax = paste( tmp$tax,1:nrow(tmp), sep=" ")
+  
+  # make network with one edge
+  oneedge <-function(tmp){
+    a1 = tmp[,c("tax","mebo")]
+    a2 = tmp[,c("tax","outcome")]
+    a3 = tmp[,c("mebo","outcome")]
+    colnames(a1)=colnames(a2)=colnames(a3)=c("V1","V2")
+    edges = c(tmp$t1.inv_med.beta,tmp$t1.inv_dv.beta,tmp$t1.med_dv.beta)
+    links=na.omit( data.frame(rbind(a1,a2,a3)) )
+    links$weight=1
+    #links$color=ifelse(sign(edges)== -1,"#65A8C4","#FF7AB6")
+    links$color=ifelse(sign(edges)== -1,"#74C476","#2272a9")
+    
+    
+    #links$color=ifelse(sign(tmp[,3])== -1,"blue","brown3")
+    nodes=data.frame(name=unique(c(as.character(links[,2]),as.character(links[,1]))))
+    corr.net <- graph_from_data_frame(d=links, vertices=nodes, directed=T) 
+    #E(corr.net)$color <- ifelse(sign(edges)== -1,"#FF7AB6","#65A8C4")
+    E(corr.net)$color <- ifelse(sign(edges)== -1,"#74C476","#2272a9")
+    E(corr.net)$lty <-rep( c(1,2,1),each=nrow(tmp))
+    E(corr.net)$association = c( rep(c("",""),each=nrow(tmp)),
+                                 paste(paste(round(tmp$t1.Prop.mediated,3)*100,"%",sep="") ,
+                                       # paste("Pmedi = ",tmp$t1.ACME.p,sep="" ),
+                                       sep="\n") )  
+    #graph_attr(corr.net, "layout") <- layout_with_lgl
+    
+    corr.net
+  }
+  oneedge(tmp[1,])
+  
+  par(mfrow=c(2,4), mar=c(1,4,1,1))
+  for (i in 1:nrow(tmp)) {
+    set.seed(0)
+    xx=oneedge(tmp[i,])
+    plot(xx, layout=layout_in_circle(xx), vertex.label.font=2, vertex.label.color="black",
+         vertex.label.cex=0.7 ,edge.arrow.size=1,
+         edge.curved=0,vertex.size=2,edge.label = E(xx)$association,
+         edge.label.color="black")
+  }
+  
+  
+}
+
+net_plot = function(med,size){
+  library("igraph")
+  tmp = med[order(med[,"t1.Prop.mediated"],decreasing=T)[1:min(nrow(med),size)],]
+  
+  a1 = tmp[,c("tax","mebo")]
+  a2 = tmp[,c("tax","outcome")]
+  a3 = tmp[,c("mebo","outcome")]
+  colnames(a1)=colnames(a2)=colnames(a3)=c("V1","V2")
+  edges = c(tmp$t1.inv_med.beta,tmp$t1.inv_dv.beta,tmp$t1.med_dv.beta)
+  links=na.omit( data.frame(rbind(a1,a2,a3)) )
+  links$weight=1
+  #links$color=ifelse(sign(edges)== -1,"#65A8C4","#FF7AB6")
+  links$color=ifelse(sign(edges)== -1,"#74C476","#2272a9")
+  
+  
+  #links$color=ifelse(sign(tmp[,3])== -1,"blue","brown3")
+  nodes=data.frame(name=unique(c(as.character(links[,2]),as.character(links[,1]))))
+  corr.net <- graph_from_data_frame(d=links, vertices=nodes, directed=T) 
+  #E(corr.net)$color <- ifelse(sign(edges)== -1,"#FF7AB6","#65A8C4")
+  E(corr.net)$color <- ifelse(sign(edges)== -1,"#2272a9","#74C476")
+  E(corr.net)$lty <-rep( c(1,2,1),each=nrow(tmp))
+  E(corr.net)$association = c( rep(c("",""),each=nrow(tmp)),
+                               paste(paste(round(tmp$t1.Prop.mediated,3)*100,"%",sep="") ,
+                                     # paste("Pmedi = ",tmp$t1.ACME.p,sep="" ),
+                                     sep="\n") )  
+  #graph_attr(corr.net, "layout") <- layout_with_lgl
+  
+  
+  
+  set.seed(0)
+  l=layout_with_fr(corr.net)
+  l <- norm_coords(l, ymin=-1, ymax=1, xmin=-1, xmax=1)
+  
+  plot(corr.net, layout =l , vertex.label.font=2, vertex.label.color="black",
+       vertex.label.cex=0.7 ,edge.arrow.size=1, rescale=T, layout=l*2,
+       edge.curved=0,vertex.size=2,edge.label = E(corr.net)$association,
+       edge.label.color="black")
+  # vertex.shape="none",
+  #vertex.label=NA,
+  #lay <- layout_as_tree(corr.net)
+  #text(lay[1,1], (lay[1,2]+lay[3,2]/2),"2019-11-01")
+  #text(0,0,
+  #	paste(paste(round(tmp$t1.Prop.mediated,3)*100,"%",sep="") ,
+  #	paste("Pmedi = ",tmp$t1.Prop.mediated.p,sep="" ),
+  #	sep="\n"),
+  #	cex=2)
+}
+
+process_sig=function(sp="3",pref2){
+  
+  ## all
+  #set_33...glm
+  f1=paste(pref2,"set_",sp,"...glm.csv",sep="")
+  glm_a=read.csv(f1,as.is=T,head=T,row.names=1)
+  
+  #	aa = glm_a[glm_a[,2]=="Center", ]
+  #hist(aa$Pr,breaks=20)
+  glm_a
+}
+#pref2="D:\\work\\ACVD2022\\01.data\\result_7_30_21\\glm_more_update\\"
+
+sig_symbol = function(qvalue){
+  nn =rep("",length(qvalue))
+  nn[qvalue<0.25]=" +"
+  nn[qvalue<0.1 & qvalue>=0.05]=" *"
+  nn[qvalue<0.05 & qvalue>=0.01 ]=" **"
+  nn[qvalue<0.01]=" ***"
+  nn
+}
+
+# link ko to metabolites
+ko_link = function(med, tax){
+  med$keggid = tax[pmatch(med$phenotype,tax[,1],duplicates.ok=T),"KEGG.ID"]
+  # compound ,ec, ko, pathway
+  library(KEGGREST)
+  #comec <- keggLink("compound", "ec")
+  #com_pa <- keggLink("compound", "pathway")
+  #pa_ec <- keggLink("pathway", "ko")
+  #pa <- keggList("pathway")
+  #ecko <- keggLink("ec", "ko")
+  #saveRDS(comec,"D:\\work\\ACVD2022\\01.data\\Figure_bin\\compound_ec.RDS")
+  #saveRDS(com_pa,"D:\\work\\ACVD2022\\01.data\\Figure_bin\\compound_pathway.RDS")
+  #saveRDS(pa_ec,"D:\\work\\ACVD2022\\01.data\\Figure_bin\\pathway_ko.RDS")
+  #saveRDS(pa,"D:\\work\\ACVD2022\\01.data\\Figure_bin\\pathway.RDS")
+  #saveRDS(ecko,"D:\\work\\ACVD2022\\01.data\\Figure_bin\\ec_ko.RDS")
+  
+  comec= readRDS("E:/gut/model/Figure_bin/compound_ec.RDS")
+  com_pa = readRDS("E:/gut/model/Figure_bin/compound_pathway.RDS")
+  pa_ec = readRDS("E:/gut/model/Figure_bin/pathway_ko.RDS")
+  pa = readRDS("E:/gut/model/Figure_bin/pathway.RDS")
+  ecko = readRDS("E:/gut/model/Figure_bin/ec_ko.RDS")
+  vec_df = function(rxn2enz){
+    # make a pathway compound list
+    pa_c =c()
+    for( pa in unique(rxn2enz)){
+      zz = c(pa, paste(names(rxn2enz[rxn2enz==pa]),collapse=","))
+      zz = c(zz, length(unlist(strsplit(zz[2],",",fixed=T))) )
+      
+      pa_c = rbind( pa_c,zz )
+    }
+    data.frame(pa_c)
+  }						
+  s1 = vec_df(comec)
+  colnames(s1)=c("cpd","ec","ec_num")
+  s2 = vec_df(com_pa)	
+  colnames(s2)=c("cpd","pathway","pa_num")		
+  # outer merge s1, s2
+  s3 = merge(x = s1, y = s2, by = "cpd", all = TRUE)
+  
+  
+  
+  
+  # read ko list to filter some pathway or ec
+  s4 = vec_df(ecko)	
+  colnames(s4)=c("ec","ko","ko_num")	
+  ko_m = read.xlsx("E:/gut/model/MACE4_coxph/ko.coxph.mace4.more.update1.xlsx")
+  #ko_m = read.table("E:/gut/model/MACE4_coxph/ko.csv",as.is=T,sep=";")
+  ko_m$tax =  unlist( lapply(strsplit(ko_m[,1],",",fixed=T),function(x){x[1]})) 
+  
+  ## some ec do not have microbiome ko
+  s4$ko_m = sapply( s4$ko,function(x){ 
+    tem = gsub("ko:","",unlist(strsplit(x,",",fixed=T)));
+    paste(tem[tem%in%ko_m$tax],collapse=";")
+  })
+  ## some compound do not have microbiome ec
+  s3$ec_m = sapply( s3$ec,function(x){ 
+    tem = unlist(strsplit(x,",",fixed=T));
+    paste( tem[tem%in%s4$ec[s4$ko_m != ""]],collapse=";")
+  })
+  
+  ## pathway compeleteness
+  s5 = vec_df(pa_ec)
+  colnames(s5)=c("pathway","ko","ko_num")
+  s5$ko_m = sapply( s5$ko,function(x){ 
+    tem = gsub("ko:","",unlist(strsplit(x,",",fixed=T)));
+    paste(tem[tem%in%ko_m$tax],collapse=";")
+  })	
+  s5$compleness = 	sapply( s5$ko_m,function(x){ 
+    length(unlist(strsplit(x,";",fixed=T)))
+  })	
+  s5$compleness = as.numeric(s5$compleness) / as.numeric(s5$ko_num)
+  ### no means pathway
+  ## path:map01120:Microbial metabolism in diverse environments;
+  ## path:map01240:Biosynthesis of cofactors
+  ## path:map01110:Biosynthesis of secondary metabolites
+  ##path:map00997:Biosynthesis of various secondary metabolites - part 3;	
+  ## path:map01230:Biosynthesis of amino acids;
+  ## path:map00970:Aminoacyl-tRNA biosynthesis;
+  ## path:map01120:Microbial metabolism in diverse environments;
+  rem = c("path:map01100","path:map01240","path:map01110","path:map00997",
+          "path:map01230","path:map00970","path:map01120")
+  s5$compleness[s5$pathway%in%rem]=0
+  ### 	only kept 	compleness >20% as microbiome pathway
+  s3$pa_m = 	sapply( s3$pathway,function(x){ 
+    tem = unlist(strsplit(x,",",fixed=T));
+    paste( tem[tem%in%s5$pathway[which(s5$compleness>0.2)]],collapse=",")
+  })
+  s3$pa_m_tax = sapply( s3$pa_m,function(x){ 
+    paste(paste(unlist(strsplit(x,",",fixed=T)),
+                pa[pmatch(unlist(strsplit(x,",",fixed=T)),names(pa))],sep=":"),collapse=";")
+  })
+  
+  s3$most_com_patax = sapply( s3$pa_m,function(x){ 
+    tm = s5[pmatch(unlist(strsplit(x,",",fixed=T)),s5$pathway),];
+    tm = tm[order(tm$compleness,decreasing=T),]; 
+    paste( tm[1,"pathway"],";",pa[pmatch(tm[1,"pathway"],names(pa))],";",round(tm[1,"compleness"],3),sep="")
+  })
+  s3[s3[,1]=="cpd:C15587",]
+  
+  # get mgs uhgg link
+  mgs_uhgg = read.table("E:/gut/model/Figure_bin/9.9M.mgs.uhgg.blast.id90.cov80.tops20.kep4.v1",as.is=T,sep="\t")
+  head(mgs_uhgg)
+  mgs_uhgg =  mgs_uhgg[mgs_uhgg$V4!="Unclassified",]
+  # check the unique 
+  tem = table(mgs_uhgg$V4)
+  tem[tem>1]
+  # non unique anotation ,just keep the top
+  mgs_uhgg[mgs_uhgg$V4=="MGYG-HGUT-00013",]
+  mgs_uhgg =mgs_uhgg[!duplicated(mgs_uhgg$V4),]
+  
+  # get uhgg ec link
+  uhgg_ec = read.table("E:/gut/model/Figure_bin/uhgg_v1_0_uhgg_catalogue_ko.txt",as.is=T,sep="\t")
+  head(uhgg_ec)
+  uhgg_ec =uhgg_ec[uhgg_ec$V1%in%mgs_uhgg$V4,]
+  dim(uhgg_ec )
+  
+  # merge mgs ec link
+  mgs_ec = uhgg_ec
+  mgs_ec$mgsid = mgs_uhgg[pmatch(uhgg_ec$V1,mgs_uhgg$V4,duplicates.ok=T ),"V1"]
+  head(mgs_ec)
+  sort( table(mgs_ec$mgsid))
+  
+  # compound, ec, ko 
+  l1 = data.frame(cpd = comec, ec=names(comec))	
+  r1 = data.frame(ec = ecko, ko=names(ecko))				
+  comko = merge(x = l1, y = r1, by = "ec", all = TRUE)
+  head(comko)
+  vec_df1 <-function(comko){
+    # make a pathway compound list
+    pa_c =c()
+    for( pa in unique(comko$cpd)){
+      zz = c(pa, paste(na.omit(unique(comko$ko[comko$cpd==pa])),collapse=","))
+      zz = c(zz, length(unlist(strsplit(zz[2],",",fixed=T))) )
+      
+      pa_c = rbind( pa_c,zz )
+    }
+    data.frame(pa_c)
+  }
+  
+  comko1 = vec_df1(comko)
+  head(comko1)
+  
+  # add ec to compund for mediation
+  out2 = data.frame(med,ec = comko1[pmatch(med$keggid,gsub("cpd:","",comko1$X1),duplicates.ok=T),c("X2")],
+                    ec2 = s3[pmatch(med$keggid,gsub("cpd:","",s3$cpd),duplicates.ok=T),c("ec")] )
+  
+  
+  # kept the ec intersect between mgs and compund in medation
+  out2$ec_commom =NA
+  for(i in 1:nrow(out2)){
+    if(! is.na( out2$ec[i] )){
+      ecxx =gsub("ko:","",unlist(strsplit(out2$ec[i],",",fixed=T)))
+      aa = pmatch( out2$sgb[i], mgs_ec$mgsid)
+      if( !is.na(aa) ){
+        ec_commom = ecxx[ ecxx%in%mgs_ec[mgs_ec$mgsid == out2$sgb[i] ,"V2"] ]
+        if(length(ec_commom) >0){
+          out2$ec_commom[i]  = paste(ec_commom,collapse=",")
+        }
+      }
+    }
+  }
+  out2 = out2[,-pmatch("ec",colnames(out2))]
+  mean(!is.na(out2$ec_commom))
+  out2[!is.na(out2$ec_commom),]
+  ## we could further locate the ec and ko by correlation ec to the heartfunction
+  process_sig=function(sp="3",pref2){
+    f1=paste(pref2,"set_",sp,"...glm.csv",sep="")
+    glm_a=read.csv(f1,as.is=T,head=T,row.names=1)
+    glm_a
+  }
+  #conf=read.table("D:\\work\\ACVD2022\\01.data\\result_7_30_21\\glm_more_update\\acvd2020.v2.list",as.is=T)#2021/10/29
+  pref2="E:/gut/model/glm_more_update/"
+  varsd2 = unique(c("SV","SYNTAX","NumberS_less12",
+                    "AAO","RAD","RVD","MPA","IVS","LVPW","S","Early_diastolic_velocities",
+                    "late_diastolic_velocities","Ratio_Ee","Ratio_EA","AO","LA","RVOT","lVEDD",
+                    "LVESD","MVE","AV","PV","TVE","MVA","LVEF","LVM","LVMI","FIB","ProBNP","TNT_HS",
+                    "CRP_G","HBDH"))
+  # run 6.key_factor.omics.plot.R
+  aso = process_sig(2,pref2)
+  head(aso)
+  sum(aso$qvalue<0.1 & aso$phenotype %in% varsd2,na.rm=T)
+  sort(table(aso[aso$qvalue<0.1 & aso$phenotype %in% varsd2,"phenotype"]))
+  
+  # check the significant of ec to heartfunction
+  out2$sig_ec_commom = NA
+  #out3 =c()
+  out3 <- data.frame()
+  for(i in 1:nrow(out2)){
+    if( (! is.na( out2$ec_commom[i] ))  & (out2$ec_commom[i] !="")){
+      aa =gsub("ko:","",unlist(strsplit(out2$ec_commom[i],",",fixed=T)))
+      bb = pmatch(aa,aso$sgb)
+      if( any(!is.na(bb)) ){
+        jj = aso[aso$sgb%in%aa,]
+        # target, indicate ec link to same outcome, NA means link to other heart function
+        jj = jj[ which(jj$phenotype%in%varsd2),]
+        jj$target = NA
+        jj$target[which(jj$phenotype == out2$outcome[i]) ] = out2$outcome[i]
+        #jj = jj[which(jj$phenotype == out2$outcome[i])  ,]
+        print(i)
+        print(jj)
+        if(any( jj$qvalue<0.1 )){
+          # merge all significant ko
+          #out2$sig_ec_commom[i]  = paste(jj[ jj$qvalue<0.1,"sgb"],collapse=",")
+          out3 = rbind(out3 , data.frame( out2[i,], jj[ jj$qvalue<0.1,] )  )
+        }
+      }
+    }
+  }
+  
+  #ec <- keggList("ec")
+  # ko <- keggList("ko")
+  #saveRDS(ec,"D:\\work\\ACVD2022\\01.data\\Figure_bin\\ec.RDS")
+  #saveRDS(ko,"D:\\work\\ACVD2022\\01.data\\Figure_bin\\ko.RDS")
+  
+  ec= readRDS("E:/gut/model/Figure_bin/ec.RDS")
+  ko = readRDS("E:/gut/model/Figure_bin/ko.RDS")
+  
+  out3$ec = ecko[pmatch(out3$sgb.1,gsub("ko:","",names(ecko)),duplicates.ok=T)]
+  out3$ec_name = ec[pmatch(out3$ec,names(ec),duplicates.ok=T)]
+  out3$ko_name = ko[pmatch(out3$sgb.1,gsub("ko:","",names(ko)),duplicates.ok=T)]
+  
+  out3
+  
+  
+}
+
+
+#networkD3 for med_link
+make_link = function(med){
+  nodes = data.frame(name =unique(c(med$mebo,med$outcome,med$tax)))
+  rownames(nodes)=0:(nrow(nodes)-1)
+  nodes$nodegroup = nodes$name
+  nodes$nodegroup = ifelse(!is.na(pmatch(nodes$nodegroup,med$mebo)), med[pmatch(nodes$nodegroup,med$mebo),"meboclass"],
+                           nodes$nodegroup )
+  
+  links = rbind( data.frame( source = as.numeric(rownames(nodes)[pmatch(med$tax,nodes$name,duplicates.ok=T)]),
+                             target = as.numeric(rownames(nodes)[pmatch(med$mebo,nodes$name,duplicates.ok=T)]),
+                             value = round(med$t1.Prop.mediated*100),
+                             energy_type= c("#65A8C4", "#FFFF00", "#FF7AB6")[sign(med$t1.inv_med.beta)+2]  ), 
+                 data.frame( source = as.numeric(rownames(nodes)[pmatch(med$mebo,nodes$name,duplicates.ok=T)]),
+                             target = as.numeric(rownames(nodes)[pmatch(med$outcome,nodes$name,duplicates.ok=T)]),
+                             value =round(med$t1.Prop.mediated*100),energy_type=c("#65A8C4", "#FFFF00", "#FF7AB6")[sign(med$t1.med_dv.beta)+2] )
+  )
+  #links
+  
+  library(networkD3)
+  library(RColorBrewer)
+  n <- nrow(nodes)
+  qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+  col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+  set.seed(0)
+  color_scale <- data.frame( domain = c( unique(links$energy_type), nodes[,c("name")] ) )
+  color_scale$range = c("#74C476","#2272a9",sample(col_vector, n,replace=T))
+  sn = sankeyNetwork(Links = links, 
+                     Nodes = nodes, 
+                     Source = "source",
+                     Target = "target", 
+                     Value = "value", 
+                     NodeID = "name",
+                     nodePadding = 10,
+                     units = "TWh", # optional units name for popups
+                     fontSize = 12, 
+                     # nodeWidth = 30,
+                     nodeWidth = 0,
+                     LinkGroup = "energy_type",
+                     NodeGroup = "nodegroup",
+                     width = 900, 
+                     height = 1000, # height  1/5, 600*1/2 =300
+                     colourScale = JS(
+                       sprintf(
+                         'd3.scaleOrdinal()  
+  				.domain(%s)
+  				.range(%s)
+					',
+                         jsonlite::toJSON(color_scale$domain),
+                         jsonlite::toJSON(color_scale$range)
+                       )
+                     ), 
+                     fontFamily = "Arial",
+                     margin = list("left"=200,"right"=100)
+                     
+  )
+  
+  #   install the newest htmlwidgets
+  #   devtools::install_github("ramnathv/htmlwidgets")
+  
+  library(htmlwidgets)
+  
+  # now let's use the new htmlwidget function
+  sn1 = onRender(
+    sn,
+    '
+	function(el,x){
+ 			 // select all our node text
+  			var node_text = d3.select(el)
+   		 .selectAll(".node text")
+   		 //and make them match
+   		 //https://github.com/christophergandrud/networkD3/blob/master/inst/htmlwidgets/sankeyNetwork.js#L180-L181
+		 .attr("x", -150 + x.options.nodeWidth)
+   		 .attr("text-anchor", "start");
+		}
+		'
+  )
+  sn1
+}
+
+
+# filter for med_link, step2, keept all mace item and LVEF; 
+filter2 = function(med){
+  # non mace item, just kept top 10 and Prop.mediated>0.15 for each heart fun
+  med2= c()
+  for( i in unique(med$outcome)	 ){
+    med1 = med[which(med$outcome==i),]
+    if(i != "LVEF" ){ # keep all edge for LVEF
+      id1 = which( ((grepl("\\+$",med1$tax) | grepl("\\*$",med1$tax)) |
+                      (grepl("\\+$",med1$mebo) | grepl("\\*$",med1$mebo))) )
+      id2 = order(med1$t1.Prop.mediated,decreasing=T)[1:min(30,nrow(med1))]
+      tmp = med1[id2,]
+      med1 = med1[unique(c(id1,id2[which(tmp$t1.Prop.mediated>0.1)])),]
+      
+    }
+    med2 = rbind(med2,med1)
+  }
+  med2
+}
+
+
+library(openxlsx)
+###-------------------------------------------------
+### metabolites/clinical index and microbime scatter plot
+### ---------------------------------------------------
+
+mp2= read.csv("E:/gut/model/Acvd2020.ko.prof.rename.csv",row.names=1,head=T)
+## read sample info
+info = read.xlsx("E:/gut/model/2021-2-3 MWAS_251216.xlsx")
+
+
+colnames(info)=gsub("\\.$","",gsub("^X.","",colnames(info)))
+dim(info)
+head(info)
+info=info[which(is.na(info$antibiotic1)),] ### remove antibiotic samples
+info=info[info$cancer==0 | is.na(info$cancer) ,] ### also no cancer, 2022/1/12 
+
+info$stage=rep(NA,nrow(info))	
+table(info$Exclude_CAD)
+table((info$SYNTAX<=10|is.na(info$SYNTAX<=10)))
+
+info$stage[which(info$Exclude_CAD==1 & (info$SYNTAX<=10|is.na(info$SYNTAX<=10)) )]="Normal"
+info$stage[which(info$Exclude_CAD==1 )]="Normal" #2021/11/16
+info$stage[which(info$SCAD==1)]="SCAD"	
+info$stage[which(info$UA==1)]="UA"	
+info$stage[which(info$MI==1)]="MI"	
+info$stage=factor(info$stage,levels=c("Normal","SCAD","UA","MI"))
+info$stage=as.numeric(info$stage)
+
+### no healthy control are need, for it is future.
+info=info[which(info$stage>1 | is.na(info$stage)),]
+## remove age<30
+table(info$age> 25 | is.na(info$age) )
+info =info[which(info$age> 25 | is.na(info$age) ),]
+dim(info)
+rownames(info)=info[,1]
+
+table(info[,c("Center","stage")])
+table(info[,c("Center")])
+table(info[,c("Center","DM")])
+
+
+
+# scatter plot
+scatter_microbe_clinc = function(mp2, info,med_link2,sp=2){
+  d1 = mp2
+  d2 = t(info)
+  # intersect
+  nm  = intersect(colnames(d1),colnames(d2))
+  length(nm)
+  d1 = d1[,pmatch(nm,colnames(d1))]
+  d2 = d2[,pmatch(nm,colnames(d2))]
+  
+  # association between mp2 and clinical
+  process_sig=function(sp="3",pref2){
+    f1=paste(pref2,"set_",sp,"...glm.csv",sep="")
+    glm_a=read.csv(f1,as.is=T,head=T,row.names=1)
+    glm_a
+  }
+  #conf=read.table("D:\\work\\ACVD2022\\01.data\\result_7_30_21\\glm_more_update\\acvd2020.v2.list",as.is=T)#2021/10/29
+  pref2="E:/gut/model/glm_more_update/"
+  
+  # run 6.key_factor.omics.plot.R
+  aso = process_sig(sp,pref2)
+  #aso$sgb1 = unlist(lapply(strsplit(aso$sgb,".",fixed=T),function(x){x[length(x)]}))
+  
+  #### prepare data for plot
+  ### long format
+  
+  df =c()
+  for(i in 1:nrow(med_link2) ){
+    
+    # ko profile
+    bb = as.numeric(t(d1[med_link2[i,"sgb.1"],]))
+    #bb = log10(bb + min(bb[bb>0])/10 )
+    bb = log10(bb + 1e-10 )
+    df = rbind(df,data.frame(var1 =med_link2[i,"sgb.1"], var2 =med_link2[i,"phenotype.1"],
+                             var3 = paste( med_link2[i,"sgb.1"] ,med_link2[i,"phenotype.1"] ,sep="|"), 
+                             mebo =  log( as.numeric(t(d2[med_link2[i,"phenotype.1"],])) +1e-3), meta = bb,
+                             qv=aso[which(aso$phenotype ==med_link2[i,"phenotype.1"] & aso$sgb ==med_link2[i,"sgb.1"]),"qvalue"]) )
+    
+  }
+  
+  library(ggplot2)
+  library(MASS)
+  
+  
+  
+  
+  dat_text  = df[!duplicated(df[,c("var1","var2","var3")]),c("var1","var2","var3","qv")]	
+  dat_text$qv = paste("q = ",ifelse(dat_text$qv <1e-3,round(dat_text$qv,6), round(dat_text$qv,3) ))
+  
+  
+  p1= ggplot(data =df , aes(y = meta, x = mebo)) +    
+    geom_point(pch = 21,size=1,alpha=0.5)+
+    #stat_compare_means(comparisons = my_comparisons,method="wilcox.test")+
+    facet_wrap(~var3 ,nrow=ceiling(nrow(med_link2)/8),scale="free" )+
+    geom_smooth(method="lm" ,color ="#2272a9",se=T )+
+    geom_text(
+      data    = dat_text,
+      mapping = aes(x = -Inf, y = -Inf, label = qv),
+      hjust   = -0.1,
+      vjust   = -1
+    )+
+    xlab("")+
+    ylab("log10(ko abun)")+
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          legend.title = element_blank(),
+          legend.position = "none" ,
+          strip.text.x = element_text(size = 5) )
+  p1
+  
+  
+}
+
+
+
+
+library(networkD3)
+library(RColorBrewer)
+library(htmlwidgets)
+# try alluvial diagram
+library(ggplot2)
+library(ggalluvial)
+library(wesanderson)
+library(viridisLite)  # load package
+library(unikn)
+
+
+#==============================================================================
+#   mgs and fecal metabolites
+# ============================================================================
+
+
+## read output from /ldfssz1/ST_META/F15HQSQS2166_CRC_JZY/jiezhuye/jie2017/acvd/2021_7_29/standard/mediation
+# metabolite anotation
+tax = read.xlsx("E:/gut/model/zhushi.xlsx",sheet=2)		
+tax[1:5,1:9]
+
+# read microbiome - metabolite -hearfunction mediation resuilt
+bimed = read.csv("E:/gut/model/glm_more_update/Fecel_Metabolomics-mgs.bidirection_mediantion.csv",as.is=T,head=T,row.names=1)
+# medianton with ec link, mgs share the same ec with metabolite and ec link to heart function
+# the link satisy the rules. just without mediation confirm; 
+#org_link= ko_link(bimed, tax)
+#dim(org_link)
+#table(org_link$outcome)
+
+# store all the mediation resuilt
+org = bimed 
+# filter,step1, FDR mediation < 0.05 and Pinverse mediation > 0.05, and proportion >0
+head(bimed)	
+nrow(bimed)
+bimed$t1.ACME.FDR = p.adjust(bimed$t1.ACME.p,method="BH")
+bimed$t2.ACME.FDR = p.adjust(bimed$t2.ACME.p,method="BH")
+bimed =bimed[which(bimed$t1.ACME.FDR<0.05 & bimed$t1.Prop.mediated.p<0.05),] 
+med = bimed[bimed$t1.Prop.mediated >0,]
+dim(med)
+
+#修改版--保留和mace相关的菌
+mace_sig_mgs = mgs_mebo$tax[mgs_mebo$qvalue < 0.1]
+bimed$t1.ACME.FDR = p.adjust(bimed$t1.ACME.p, method="BH")
+
+# 定义两个过滤条件
+condition_A = (bimed$t1.ACME.FDR < 0.01 & bimed$t1.Prop.mediated.p < 0.01)
+condition_B = (bimed$t1.ACME.FDR < 0.05 & bimed$t1.Prop.mediated.p < 0.05 & bimed$sgb %in% mace_sig_mgs)
+
+# 执行过滤 (取并集)
+bimed_filtered = bimed[which(condition_A | condition_B), ]
+nrow(bimed_filtered)
+# 确保中介效应方向为正 (Prop.mediated > 0)
+med = bimed_filtered[bimed_filtered$t1.Prop.mediated > 0, ]
+
+print(paste("过滤后的中介链数量:", nrow(med)))
+
+#修改版
+# 1. 计算中介分析的 FDR (如果还没计算)
+bimed$t1.ACME.FDR = p.adjust(bimed$t1.ACME.p, method="BH")
+bimed$t2.ACME.FDR = p.adjust(bimed$t2.ACME.p,method="BH")
+# --- 标准 A: Top 30 逻辑 ---
+# 先筛选出 qvalue 显著的条目，再排序取前 30
+# 注意：这里的 qvalue 通常指 t1.ACME.FDR 或原始 qvalue 列
+med_top30 = bimed[which(bimed$t1.ACME.FDR < 0.05& bimed$t1.Prop.mediated.p < 0.05), ]
+med_top30 = med_top30[order(med_top30$t1.Prop.mediated, decreasing = TRUE), ]
+if(nrow(med_top30) > 30) {
+  med_top30 = med_top30[1:30, ]
+}
+
+# --- 标准 B: MACE 相关逻辑 ---
+# 满足中介显著性 (FDR < 0.05 & p < 0.05) 且 菌与 MACE 相关
+mace_sig_mgs = mgs_mebo$tax[mgs_mebo$qvalue < 0.1]
+med_mace = bimed[which(bimed$t1.ACME.FDR < 0.05 & 
+                         bimed$t1.Prop.mediated.p < 0.05 & 
+                         bimed$sgb %in% mace_sig_mgs), ]
+
+# --- 合并结果 ---
+# 使用 rownames 确保合并时不产生重复
+final_indices = unique(c(rownames(med_top30), rownames(med_mace)))
+med = bimed[final_indices, ]
+
+# 额外检查：确保中介比例大于 0 且不为 NA
+med = med[which(med$t1.Prop.mediated > 0 & !is.na(med$t1.Prop.mediated)), ]
+
+print(paste("最终筛选出的中介路径总数:", nrow(med)))
+
+# mediation with ec link, mgs share the same ec with metabolite and ec link to heart function
+# the link satisy the rules. and with  mediation confirm; 
+# the link not satisfy the rules , means nonthing , such as no kegg database, 
+med_link= ko_link(med, tax)
+
+#count the number of significant mediantion , med the significant; org, all
+cnt = med # used for rest lipids
+cnt_org = org # used for rest lipids
+
+
+# the proportion of significant/all
+Group <- c("Bi-mediation", "Other")
+Number <- c(224, 7091 )
+top_ten <- data.frame(Group, Number)
+top_ten_descend <- top_ten[order(-top_ten$Number), ]
+pdf("bimed_mgs_metabolite.pdf",width=5,height=5)
+pie(top_ten_descend$Number, 
+    labels = top_ten_descend$Group, 
+    main = "fecal metabolites")
+dev.off()
+pie_labels <- c("15.05%", "Bi-mediation") # 将百分比放在第一个位置对应 Bi-mediation
+
+
+library(ggplot2)
+library(dplyr)
+
+Group <- c("Bi-mediation", "Other")
+Number <- c(224, 7091)
+
+top_ten <- data.frame(Group, Number)
+
+# 按数量降序
+top_ten_descend <- top_ten[order(-top_ten$Number), ]
+
+# 计算比例
+percent <- top_ten_descend$Number / sum(top_ten_descend$Number)
+
+# 颜色（Bi-mediation 蓝色）
+cols <- c("white", "#A6CEE3")
+
+# 画饼图（先不加标签）
+pie_obj <- pie(
+  top_ten_descend$Number,
+  labels = top_ten_descend$Group,
+  col = cols,
+  main = "Microbiota - Fecal metabolites - Heart indicators"
+)
+
+# ---------- 计算扇区中心位置 ----------
+angles <- cumsum(top_ten_descend$Number) / sum(top_ten_descend$Number) * 2*pi
+mid_angles <- angles - 
+  (top_ten_descend$Number / sum(top_ten_descend$Number) * pi)
+
+# ---------- 只给 Bi-mediation 添加内部比例 ----------
+idx <- which(top_ten_descend$Group == "Bi-mediation")
+
+text(
+  x = 0.55 * cos(mid_angles[idx]),
+  y = 0.5 * sin(mid_angles[idx]),
+  labels = sprintf("%.2f%%", percent[idx] * 100),
+  col = "black",
+  cex = 0.9,
+  font = 1
+)
+
+
+
+
+
+
+
+# metabolites and mace
+mark_mebo = read.csv("E:/gut/model/MACE4_coxph/Fecel-Metabolomics.coxph.mace4.more.update.csv",head=T,row.names=1,as.is=T)
+tax[grepl("zem",tax$Compounds),1:9]
+mark_mebo$Compounds =  tax[pmatch(gsub("X","",mark_mebo$tax),tax[,1],duplicates.ok=T),"Compounds" ]
+mark_mebo$ftax1 =  paste(mark_mebo$Compounds,ifelse(mark_mebo$qvalue<0.24," *",""),sep="")
+mark_mebo[,"keggid"]=tax[pmatch(gsub("X","",mark_mebo$tax),tax[,1],duplicates.ok=T),"KEGG.ID" ]
+mark_mebo$ftax1 <- iconv(mark_mebo$ftax1, to = "UTF-8")
+mark_mebo$ftax1 = paste(gsub(" *","",mark_mebo$ftax1,fixed=T),sig_symbol(mark_mebo$qvalue),sep="")	
+#Encoding(mark_mebo$ftax1)
+
+
+# mgs and mace
+mgs_mebo = read.csv("E:/gut/model/MACE4_coxph/mgs.coxph.mace4.more.update.csv",head=T,row.names=1,as.is=T)
+tax = read.table("E:/gut/model/MACE4_coxph/MGS.cluster.IMG_v400_ncbi_2016_6_28.taxo1.any1.fromsussane.2018.10.19.addIGGgut.addSGBref.detail",sep="\t",quote="",as.is=T,head=T)
+mgs_mebo=data.frame(mgs_mebo,tax[pmatch(gsub("X","",mgs_mebo$tax),tax[,1],duplicates.ok=T),c("V2","final_anno")])
+mgs_mebo$ftax1 = paste(mgs_mebo$final_anno,ifelse(mgs_mebo$qvalue<0.24," *",""),sep="")
+mgs_mebo$ftax1 <- iconv(mgs_mebo$ftax1, to = "UTF-8")		
+mgs_mebo$ftax1 = paste(gsub(" *","",mgs_mebo$ftax1,fixed=T),sig_symbol(mgs_mebo$qvalue),sep="")	
+
+# add mace info of the metabolite and mgs 
+tax = read.xlsx("E:/gut/model/zhushi.xlsx",sheet=2)	
+med$mebo = mark_mebo[pmatch(med$phenotype,mark_mebo$tax,duplicates.ok=T),"ftax1"]
+med$meboclass = tax[pmatch(med$phenotype,tax[,1],duplicates.ok=T),"Class"]
+med$tax = mgs_mebo[pmatch(med$sgb,mgs_mebo$tax,duplicates.ok=T),c("ftax1")]
+
+# add mace info of the metabolite and mgs 
+med_link$mebo = mark_mebo[pmatch(med_link$phenotype,mark_mebo$tax,duplicates.ok=T),"ftax1"]
+med_link$meboclass = tax[pmatch(med_link$phenotype,tax[,1],duplicates.ok=T),"Class"]
+med_link$tax = mgs_mebo[pmatch(med_link$sgb,mgs_mebo$tax,duplicates.ok=T),c("ftax1")]
+
+setwd("E:/gut/model/")
+write.csv(med,"figure4a.0.5.20260320.csv")
+
+setwd("E:/gut/model/figure.0.5/all")
+# hist plot of the mediation proportion
+p<-ggplot(med, aes(x=t1.Prop.mediated)) +
+  geom_histogram( position="dodge")+
+  theme(legend.position="top")
+p + 
+  #scale_color_grey() +
+  theme_classic() +
+  theme(legend.position="top")+
+  scale_y_continuous(expand = expansion(mult = c(0, 0), 
+                                        add = c(0, 0)))+
+  scale_x_continuous(expand = expansion(mult = c(0, 0), 
+                                        add = c(0, 0)))+
+  xlab("Proportion of mediation")
+
+
+# filter, step2, keept all mace item and LVEF; 
+# non mace item, just kept top 10 and Prop.mediated>0.15 for each heart fun
+med2= c()
+for( i in unique(med$outcome)	 ){
+  med1 = med[which(med$outcome==i),]
+  if(i != "LVEF" ){ # keep all edge for LVEF
+    id1 = which( ((grepl("\\+$",med1$tax) | grepl("\\*$",med1$tax)) |
+                    (grepl("\\+$",med1$mebo) | grepl("\\*$",med1$mebo))) )
+    id2 = order(med1$t1.Prop.mediated,decreasing=T)[1:min(10,nrow(med1))]
+    tmp = med1[id2,]
+    med1 = med1[unique(c(id1,id2[which(tmp$t1.Prop.mediated>0.15)])),]
+    
+  }
+  med2 = rbind(med2,med1)
+}
+med = med2
+write.csv(med,"Figure4a_med.0.5.csv")
+
+# store the two step filter result for plot with lipids later
+allmed =  med
+
+# triple plot
+net_plot(med,size=10)
+net_plot(med_link[!duplicated(med_link[,c("sgb","phenotype","outcome")]),pmatch(colnames(med),colnames(med_link)) ],size=25)
+
+
+
+med_link1 = med_link[!duplicated(med_link[,c("sgb","phenotype","outcome")]),pmatch(colnames(med),colnames(med_link)) ]
+med_link1[med_link1$outcome%in%c("Early_diastolic_velocities","lVEDD","LVEF","LVESD"),c("mebo","tax","outcome","t1.Prop.mediated")]
+med_link[(!is.na(med_link$target)) & (sign(med_link$t1.inv_dv.beta) == sign(med_link$Estimate)),c("mebo","tax","outcome","t1.Prop.mediated","sgb.1" ,"Estimate","qvalue")]	
+aa = med_link[ (sign(med_link$t1.inv_dv.beta) == sign(med_link$Estimate)),c("mebo","tax","outcome","t1.Prop.mediated","t1.inv_med.beta","sgb.1" ,"phenotype.1","Estimate","qvalue")]	
+aa
+write.csv(aa,"bimediantion.mgs_metabolites.top30.linkec.sankey.csv")
+#2-Phenylacetamide	Enterococcus faecium-mgs1021	HBDH	0.432753903	0.053560886	K01426	FIB	0.111478579	0.006534162	�ϳ�
+#Deoxyadenosine	Lactobacillus oris-mgs0661	RVD	0.177132191	-0.055758286	K00893	ProBNP	0.11297807	0.006220963	����
+#Deoxyadenosine	Collinsella aerofaciens-mgs1180	RVD	0.122501383	-0.035725228	K06952	RVOT	0.084675977	0.094140917	ת��
+#Hypoxanthine	Eubacterium ramulus-mgs0736 *	ProBNP	0.085969413	0.016245045	K03783	RVD	-0.068267679	0.080460916	ת��
+#L-Tyrosine	Lactobacillus oris-mgs0661	RVD	0.256536024	-0.025011952	K22330	RVD	0.101166304	0.000972155	����
+#N-Acetyl-D-Glucosamine	Eubacterium ramulus-mgs0736 *	ProBNP	0.109347375	0.017994786	K18675	ProBNP	-0.094462052	0.03501082	�ϳ�
+aa = read.csv("bimediantion.mgs_metabolites.top30.linkec.sankey.csv",as.is=T)
+#aa = aa[which(aa[,"X.3"]=="select"),]
+#med_link2= med_link[(med_link$mebo%in%aa$mebo) & (med_link$tax%in%aa$tax) & (med_link$outcome%in%aa$outcome)
+#			 & (med_link$sgb.1%in%aa$sgb.1)& (med_link$phenotype.1%in%aa$phenotype.1)& (as.character(med_link$t1.Prop.mediated)%in%as.character(aa$t1.Prop.mediated)), ]
+med_link2= med_link[pmatch(aa$X,rownames(med_link)),]
+#med_link2 = med_link2[!duplicated(med_link2[,c("sgb","phenotype","outcome")]),pmatch(c(colnames(med),"sgb.1","phenotype.1"),colnames(med_link2)) ]
+
+pdf("bimediantion.mgs_metabolites.linkec.sankey.select.0.5.pdf",
+    width=6,height=6)
+net_plot(med_link2,size=10)
+dev.off()
+clique_plot(med_link2,size=10)
+
+
+p1 = scatter_microbe_clinc(mp2, info,med_link2,sp=2)
+ggsave("bimediantion.mgs_metabolites.linkec.sankey.select.scatter.0.5.pdf", p1, 
+       width=12,height=8) 
+
+
+
+# filter for med_link, step2, keept all mace item and LVEF; 
+med_link1 = filter2(med_link1)
+make_link(med_link1)
+store_link = med_link1
+
+# try alluvial diagram
+
+library(ggplot2)
+library(ggalluvial)
+library(wesanderson)
+library(viridisLite)  # load package
+
+vir_10 <- viridis(n = 10)
+library(unikn)
+mix_1 <- usecol(pal = c(Karpfenblau, "white", Peach), n = 15)   # define color palette from 3 colors
+plot(1:10,cex=5,pch=19,col=mix_1)
+
+med$fre<-1
+sankey_colors<-c(wes_palette("Darjeeling1", length(unique(med$outcome)), type = "continuous"))
+sankey_colors<- hcl.colors(length(unique(med$outcome)), "Temps")
+# sankey_colors[7]="#74C476"
+sankey_colors[7]=vir_10[10]
+sankey_colors[2]=hcl.colors(15, "Geyser")[6]
+sankey_colors[11] = mix_1[3]
+
+colx = data.frame( outcome = levels(factor(med$outcome)) ,cols = sankey_colors )
+#write.csv(colx,"D:\\work\\ACVD2020\\01.data\\result_1_4_22\\alluvium.color_code.csv")
+#sankey_colors <- read.csv("D:\\work\\ACVD2020\\01.data\\result_1_4_22\\alluvium.color_code.csv",row.names=1)[,2]
+#sankey_colors <- read.csv("D:\\work\\ACVD2020\\01.data\\result_1_4_22\\alluvium.color_code.csv",row.names=1)
+sankey_colors <-colx
+sankey_colors = sankey_colors[pmatch(levels(factor(med$outcome)),sankey_colors[,1]),2]
+p1 = ggplot(med, aes(axis1 = tax, 
+                     axis2 = mebo, 
+                     axis3 = outcome,
+                     y = fre)) + # 确保 y 映射的是 fre
+  scale_x_discrete(limits = c("Microbime", "Metabolites", "Heart function")) +
+  
+  # 1. 调整 Alpha 透明度是变“柔和”的关键
+  # 将 alpha 设置为 0.5-0.7 之间，颜色会立刻变温润
+  geom_alluvium(aes(fill = outcome), alpha = 0.8) + 
+  
+  # 2. 增强 Stratum（中间柱子）的视觉舒适度
+  # 给柱子一点极淡的灰色背景和细白边，防止颜色直接撞在一起
+  geom_stratum(alpha = 0.1, fill = "grey90", color = "white", size = 0.3) +
+  
+  # 3. 字体微调
+  geom_text(stat = "stratum", cex = 2, fontface = "bold",aes(label = after_stat(stratum))) +
+  
+  # 颜色映射保持你原来的逻辑
+  scale_color_manual(values = sankey_colors) +
+  scale_fill_manual(values = sankey_colors) +
+  
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(size = 12, face = "bold", color = "grey30"), # 轴标签也调淡一点
+        axis.title = element_blank(),
+        axis.text.y = element_blank(),
+        panel.grid = element_blank())
+p2 = p1 + scale_x_discrete(
+  limits = c("Microbiota", "Metabolites", "Heart function"),
+  # expand = expansion(mult = c(左侧比例, 右侧比例))
+  # 增加左侧的乘法扩展，例如 0.5 或 0.8
+  expand = expansion(mult = c(0.25, 0.1))
+)
+ggsave("mgs.fecal_metabolites.alluvium.top30.pdf", p2, 
+       width = 8, height = 10) 
+write.csv(med,"Figure4a_med.top30.csv")
+
+##lipids
+## read output from /ldfssz1/ST_META/F15HQSQS2166_CRC_JZY/jiezhuye/jie2017/acvd/2021_7_29/standard/mediation
+tax = read.xlsx("E:/gut/model/zhushi.xlsx",sheet=1)	
+tax[1:5,1:9]
+tax_mod = tax
+tax_mod$Index = gsub("-","_",tax_mod$Index)
+
+org = bimed 
+bimed = read.csv("E:/gut/model/glm_more_update/Fecel_Lipidomics-mgs.bidirection_mediantion.csv",as.is=T,head=T,row.names=1)
+# FDR mediation < 0.05 and Pinverse mediation > 0.05
+head(bimed)	
+bimed$t1.ACME.FDR = p.adjust(bimed$t1.ACME.p,method="BH")
+bimed$t2.ACME.FDR = p.adjust(bimed$t2.ACME.p,method="BH")
+
+
+bimed =bimed[which(bimed$t1.ACME.FDR<0.05 & bimed$t1.Prop.mediated.p<0.05),] 
+med = bimed[bimed$t1.Prop.mediated >0,]
+dim(med)
+nrow(bimed)
+
+#修改版--保留和mace相关的菌
+mace_sig_mgs = mgs_mebo$tax[mgs_mebo$qvalue < 0.1]
+bimed$t1.ACME.FDR = p.adjust(bimed$t1.ACME.p, method="BH")
+
+# 定义两个过滤条件
+condition_A = (bimed$t1.ACME.FDR < 0.01 & bimed$t1.Prop.mediated.p < 0.01)
+condition_B = (bimed$t1.ACME.FDR < 0.05 & bimed$t1.Prop.mediated.p < 0.05 & bimed$sgb %in% mace_sig_mgs)
+
+# 执行过滤 (取并集)
+bimed_filtered = bimed[which(condition_A | condition_B), ]
+
+# 确保中介效应方向为正 (Prop.mediated > 0)
+med = bimed_filtered[bimed_filtered$t1.Prop.mediated > 0, ]
+
+print(paste("过滤后的中介链数量:", nrow(med)))
+
+med$mebo = mark_mebo[pmatch(med$phenotype, mark_mebo$tax, duplicates.ok=T), "ftax1"]
+med$meboclass = tax[pmatch(med$phenotype, tax[,1], duplicates.ok=T), "Class"]
+med$tax = mgs_mebo[pmatch(med$sgb, mgs_mebo$tax, duplicates.ok=T), "ftax1"]
+
+
+Group <- c("Bi-mediation", "Other")
+Number <- c(75, 1206 )
+top_ten <- data.frame(Group, Number)
+top_ten_descend <- top_ten[order(-top_ten$Number), ]
+pie(top_ten_descend$Number, 
+    labels = top_ten_descend$Group, 
+    main = "")
+
+pdf("bimed_mgs_lipid.pdf",width=5,height=5)
+pie(top_ten_descend$Number, 
+    labels = top_ten_descend$Group, 
+    main = "fecal lipids")
+dev.off()	
+
+Group <- c("Bi-mediation", "Other")
+Number <- c(75, 1206)
+
+top_ten <- data.frame(Group, Number)
+
+# 按数量降序
+top_ten_descend <- top_ten[order(-top_ten$Number), ]
+
+# 计算比例
+percent <- top_ten_descend$Number / sum(top_ten_descend$Number)
+
+# 颜色（Bi-mediation 蓝色）
+cols <- c("white", "#A6CEE3")
+
+# 画饼图（先不加标签）
+pie_obj <- pie(
+  top_ten_descend$Number,
+  labels = top_ten_descend$Group,
+  col = cols,
+  main = "Fecal lipids"
+)
+
+# ---------- 计算扇区中心位置 ----------
+angles <- cumsum(top_ten_descend$Number) / sum(top_ten_descend$Number) * 2*pi
+mid_angles <- angles - 
+  (top_ten_descend$Number / sum(top_ten_descend$Number) * pi)
+
+# ---------- 只给 Bi-mediation 添加内部比例 ----------
+idx <- which(top_ten_descend$Group == "Bi-mediation")
+
+text(
+  x = 0.55 * cos(mid_angles[idx]),
+  y = 0.5 * sin(mid_angles[idx]),
+  labels = sprintf("%.2f%%", percent[idx] * 100),
+  col = "black",
+  cex = 0.9,
+  font = 1
+)
+
+
+
+
+
+
+
+
+
+
+
+# mediation with ec link, mgs share the same ec with metabolite and ec link to heart function
+# the link satisy the rules. and with  mediation confirm; 
+# the link not satisfy the rules , means nonthing , such as no kegg database, 
+med_link= ko_link(med, tax_mod)
+
+cnt = med
+cnt_org = org
+
+Group <- c("Bi-mediation", "Other")
+Number <- c(258, 1023 )
+top_ten <- data.frame(Group, Number)
+top_ten_descend <- top_ten[order(-top_ten$Number), ]
+pie(top_ten_descend$Number, 
+    labels = top_ten_descend$Group, 
+    main = "")
+
+pdf("bimed_mgs_lipid.pdf",width=5,height=5)
+pie(top_ten_descend$Number, 
+    labels = top_ten_descend$Group, 
+    main = "fecal lipids")
+dev.off()	
+
+#mgstax = read.table("D:\\work\\ACVD2020\\01.data\\clean\\MGS.cluster.IMG_v400_ncbi_2016_6_28.taxo1.any1.fromsussane.2018.10.19.addIGGgut.addSGBref.detail",sep="\t",quote="",as.is=T,head=T)
+mark_mebo = read.csv("E:/gut/model/MACE4_coxph/Fecel-Lipidomics.coxph.mace4.more.update.csv",head=T,row.names=1,as.is=T)
+mark_mebo$Compounds =  tax[pmatch(gsub("X","",mark_mebo$tax),tax[,1],duplicates.ok=T),"Compounds" ]
+mark_mebo$ftax1 =  paste(mark_mebo$Compounds,ifelse(mark_mebo$qvalue<0.24," *",""),sep="")
+mark_mebo[,"keggid"]=tax[pmatch(gsub("X","",mark_mebo$tax),tax[,1],duplicates.ok=T),"KEGG.ID" ]
+mark_mebo$ftax1 <- iconv(mark_mebo$ftax1, to = "UTF-8")
+mark_mebo$ftax1 = paste(gsub(" *","",mark_mebo$ftax1,fixed=T),sig_symbol(mark_mebo$qvalue),sep="")	
+#Encoding(mark_mebo$ftax1)
+
+# mgs and mace
+mgs_mebo = read.csv("E:/gut/model/MACE4_coxph/mgs.coxph.mace4.more.update.csv",head=T,row.names=1,as.is=T)
+tax = read.table("E:/gut/model/MACE4_coxph/MGS.cluster.IMG_v400_ncbi_2016_6_28.taxo1.any1.fromsussane.2018.10.19.addIGGgut.addSGBref.detail",sep="\t",quote="",as.is=T,head=T)
+mgs_mebo=data.frame(mgs_mebo,tax[pmatch(gsub("X","",mgs_mebo$tax),tax[,1],duplicates.ok=T),c("V2","final_anno")])
+mgs_mebo$ftax1 = paste(mgs_mebo$final_anno,ifelse(mgs_mebo$qvalue<0.24," *",""),sep="")
+mgs_mebo$ftax1 <- iconv(mgs_mebo$ftax1, to = "UTF-8")		
+mgs_mebo$ftax1 = paste(gsub(" *","",mgs_mebo$ftax1,fixed=T),sig_symbol(mgs_mebo$qvalue),sep="")	
+
+# add mace info of the metabolite and mgs 
+tax = read.xlsx("E:/gut/model/zhushi.xlsx",sheet=1)	
+med$mebo = mark_mebo[pmatch(med$phenotype,mark_mebo$tax,duplicates.ok=T),"ftax1"]
+med$meboclass = tax[pmatch(med$phenotype,tax[,1],duplicates.ok=T),"Class"]
+med$tax = mgs_mebo[pmatch(med$sgb,mgs_mebo$tax,duplicates.ok=T),c("ftax1")]
+
+# add mace info of the metabolite and mgs 
+med_link$mebo = mark_mebo[pmatch(med_link$phenotype,mark_mebo$tax,duplicates.ok=T),"ftax1"]
+med_link$meboclass = tax[pmatch(med_link$phenotype,tax[,1],duplicates.ok=T),"Class"]
+med_link$tax = mgs_mebo[pmatch(med_link$sgb,mgs_mebo$tax,duplicates.ok=T),c("ftax1")]
+
+write.csv(med,"figure4b.20240919.maceall.lip.csv")
+
+
+# hist plot of the mediation proportion
+p<-ggplot(med, aes(x=t1.Prop.mediated)) +
+  geom_histogram( position="dodge")+
+  theme(legend.position="top")
+p + 
+  #scale_color_grey() +
+  theme_classic() +
+  theme(legend.position="top")+
+  scale_y_continuous(expand = expansion(mult = c(0, 0), 
+                                        add = c(0, 0)))+
+  scale_x_continuous(expand = expansion(mult = c(0, 0), 
+                                        add = c(0, 0)))+
+  xlab("Proportion of mediation")
+
+#med = med[ which(med$t1.inv_med.p <0.05 &
+#			med$t1.med_dv.p <0.05 &
+#			med$t1.inv_dv.p<0.05 ), ]
+
+#med = med[med$t1.Prop.mediated>0.15,]
+# for every outcome, just kept the top 15 edges
+med2= c()
+for( i in unique(med$outcome)	 ){
+  med1 = med[which(med$outcome==i),]
+  if(i != "LVEF" ){ # keep all edge for LVEF
+    id1 = which( ((grepl("\\+$",med1$tax) | grepl("\\*$",med1$tax)) |
+                    (grepl("\\+$",med1$mebo) | grepl("\\*$",med1$mebo))) )
+    id2 = order(med1$t1.Prop.mediated,decreasing=T)[1:min(10,nrow(med1))]
+    tmp = med1[id2,]
+    med1 = med1[unique(c(id1,id2[which(tmp$t1.Prop.mediated>0.15)])),]
+    
+  }
+  med2 = rbind(med2,med1)
+}
+med = med2
+
+allmed =  med
+##2024 04 06
+allmed =  med[,pmatch(colnames(allmed),colnames(med))]
+# allmed = rbind(allmed, med[,pmatch(colnames(allmed),colnames(med))])
+dim(allmed)
+med3 = allmed  # combine fecal metabolites and fecal lipids
+# control the edge is less than 100
+med2= c()
+for( i in unique(med$outcome)	 ){
+  med1 = med[which(med$outcome==i),]
+  if(i != "LVEF" ){ # keep all edge for LVEF
+    #if(nrow(med1)>1){
+    id1 = which( ((grepl("\\+$",med1$tax) | grepl("\\*$",med1$tax)) |
+                    (grepl("\\+$",med1$mebo) | grepl("\\*$",med1$mebo))) )
+    id2 = order(med1$t1.Prop.mediated,decreasing=T)[1:min(6,nrow(med1))]
+    tmp = med1[id2,]
+    med1 = med1[unique(c(id1,id2[which(tmp$t1.Prop.mediated>0.15)])),]
+    
+  }else{ # LVEF kept prop >10%
+    id1 = which( ((grepl("\\+$",med1$tax) | grepl("\\*$",med1$tax)) |
+                    (grepl("\\+$",med1$mebo) | grepl("\\*$",med1$mebo))) )
+    id2 = order(med1$t1.Prop.mediated,decreasing=T)
+    tmp = med1[id2,]
+    med1 = med1[unique(c(id1,id2[which(tmp$t1.Prop.mediated>0.10)])),]
+  }
+  med2 = rbind(med2,med1)
+}
+med = med2
+dim(med)
+table(med$outcome)
+
+
+
+net_plot(med,size=10)
+
+	# try alluvial diagram
+
+	library(ggplot2)
+	library(ggalluvial)
+	library(wesanderson)
+	library(viridisLite)  # load package
+
+med$fre <- 1
+
+## ===============================
+## 2. 生成颜色向量（你原来的）
+## ===============================
+sankey_colors <- c(
+  wes_palette(
+    "Darjeeling1",
+    length(unique(med$outcome)),
+    type = "continuous"
+  )
+)
+
+sankey_colors <- hcl.colors(
+  length(unique(med$outcome)),
+  "Temps"
+)
+
+## 手动微调（保留）
+sankey_colors[2] <- hcl.colors(15, "Geyser")[6]
+# sankey_colors[7] <- vir_10[10]
+# sankey_colors[11] <- mix_1[1]
+
+## ===============================
+## 3. 可视化检查（你原来的）
+## ===============================
+plot(1:length(sankey_colors), pch = 19, col = sankey_colors, cex = 2)
+
+## ===============================
+## 4. 【关键修改】构建颜色映射表
+## ===============================
+sankey_color_df <- data.frame(
+  outcome = levels(factor(med$outcome)),
+  color   = sankey_colors,
+  stringsAsFactors = FALSE
+)
+
+## ===============================
+## 5. 按 outcome 顺序匹配颜色
+## ===============================
+m <- pmatch(
+  levels(factor(med$outcome)),
+  sankey_color_df$outcome
+)
+
+sankey_colors1 <- sankey_color_df$color[m]
+
+## （理论上不会再有 NA，但保留你原来的兜底）
+sankey_colors1[is.na(sankey_colors1)] <-
+  sankey_color_df$color[-m[!is.na(m)]][
+    seq_len(sum(is.na(sankey_colors1)))
+  ]
+	p1= ggplot(med,aes(axis1 = tax, 
+                               axis2 = mebo, 
+                               axis3 = outcome,
+                               y=med$fre))+
+  		scale_x_discrete(limits = c("Microbime", "Metabolites", "Heart function")) +
+  	#geom_alluvium(aes(fill = med$outcome),alpha = .55)+
+		geom_alluvium(aes(fill = med$outcome),alpha = 0.8)+
+
+  		geom_stratum(alpha = 0,color = adjustcolor( "white", alpha.f = 1),size=0.5)+
+ 		 geom_text(stat = "stratum",cex=2,fontface = "bold",aes(label = after_stat(stratum))) +#,fontface = "bold"
+  		scale_color_manual(values=sankey_colors1)+
+ 		 scale_fill_manual(values=sankey_colors1)+
+  		theme_minimal()+
+  		theme(legend.position="none",
+      	  axis.text = element_text(size = 10),
+       	 axis.title = element_blank(),
+       	 axis.text.y = element_blank(),
+       	 panel.grid=element_blank())
+
+  	  ggsave("mace4_mgs.lipids.alluvium.maceall.0.5.pdf", p1, 
+			 width = 7, height = 9) 
+	write.csv(med,"mace4_Figure4b.mgs.lipids.0.5.csv")
